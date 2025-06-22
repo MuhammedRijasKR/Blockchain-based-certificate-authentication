@@ -1,0 +1,43 @@
+Pinata
+------
+
+API KEY: 7e1249786182cc958d5d
+API SECRET: 3d3fb369e2862c5371cb4a7d51617c3054fc66dab455f4d77e2b9e37c5b00e6e
+JWT(secret access token): eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySW5mb3JtYXRpb24iOnsiaWQiOiI2NjVkZjIxMC01NmRhLTRlNmItYTNlNS04MmI5ZmZhYTQzYTAiLCJlbWFpbCI6InJpamFzMzIzQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJwaW5fcG9saWN5Ijp7InJlZ2lvbnMiOlt7ImRlc2lyZWRSZXBsaWNhdGlvbkNvdW50IjoxLCJpZCI6IkZSQTEifSx7ImRlc2lyZWRSZXBsaWNhdGlvbkNvdW50IjoxLCJpZCI6Ik5ZQzEifV0sInZlcnNpb24iOjF9LCJtZmFfZW5hYmxlZCI6ZmFsc2UsInN0YXR1cyI6IkFDVElWRSJ9LCJhdXRoZW50aWNhdGlvblR5cGUiOiJzY29wZWRLZXkiLCJzY29wZWRLZXlLZXkiOiI3ZTEyNDk3ODYxODJjYzk1OGQ1ZCIsInNjb3BlZEtleVNlY3JldCI6IjNkM2ZiMzY5ZTI4NjJjNTM3MWNiNGE3ZDUxNjE3YzMwNTRmYzY2ZGFiNDU1ZjRkNzdlMmI5ZTM3YzViMDBlNmUiLCJleHAiOjE3ODIwNjQ2MDh9.1RsbLXsr6RLSx0yaoTQ5qBLQSFMRQC0t4m46J0BZSjY
+
+----------------------------------------------------------------------------------------------------------------
+
+Firebase: 
+--------
+
+npm install firebase
+-------------------------------
+
+// Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+import { getAnalytics } from "firebase/analytics";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyBs1lf0HdAGeO1VDcDoO1v1qdt7jMHCjs8",
+  authDomain: "blockchain-based-certification.firebaseapp.com",
+  projectId: "blockchain-based-certification",
+  storageBucket: "blockchain-based-certification.firebasestorage.app",
+  messagingSenderId: "552389200414",
+  appId: "1:552389200414:web:67dcca8732bf98ab3ebc0f",
+  measurementId: "G-PND397X99J"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const analytics = getAnalytics(app);
+
+
+
+
+fire base user:
+email: institute@gmail.com
+pass: InstitutePass
