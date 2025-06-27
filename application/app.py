@@ -1,32 +1,36 @@
 import streamlit as st
-from PIL import Image
-from utils.streamlit_utils import hide_icons, hide_sidebar, remove_whitespaces
-from streamlit_extras.switch_page_button import switch_page
 
-st.set_page_config(layout="wide", initial_sidebar_state="collapsed")
-hide_icons()
-hide_sidebar()
-remove_whitespaces()
+from utils.auth import AuthManager
 
+auth = AuthManager()
 
-st.title("Certificate Validation System")
-st.write("")
-st.subheader("Select Your Role")
+st.markdown("""
+<style>
+    .st-emotion-cache-1jicfl2 {display: none !important;}
+    section[data-testid="stSidebar"] {display: none !important;}
+    .stSidebar {display: none !important;}
+    button[kind="header"] {display: none !important;}
+</style>
+""", unsafe_allow_html=True)
 
-col1, col2 = st.columns(2)
-institite_logo = Image.open("../assets/institute_logo.png")
-with col1:
-    st.image(institite_logo, output_format="jpg", width=230)
-    clicked_institute = st.button("Institute")
+if auth.is_authenticated():
+    logout_btn = st.button("Logout")
 
-company_logo = Image.open("../assets/company_logo.jpg")
-with col2:
-    st.image(company_logo, output_format="jpg", width=230)
-    clicked_verifier = st.button("Verifier")
+    if logout_btn:
+        auth.logout()
+        st.switch_page("pages/home.py")
 
-if clicked_institute:
-    st.session_state.profile = "Institute"
-    switch_page('login')
-elif clicked_verifier:
-    st.session_state.profile = "Verifier"
-    switch_page('login')
+pages = [
+    st.Page("pages/home.py", title="Home"),
+
+    st.Page("pages/institute/institute.py", title="Institute"),
+    st.Page("pages/institute/institute_login.py", title="Institute | Login"),
+    st.Page("pages/institute/institute_register.py", title="Institute | Register"),
+
+    st.Page("pages/verifier/verifier.py", title="Verifier"),
+    st.Page("pages/verifier/verifier_login.py", title="Verifier | Login"),
+    st.Page("pages/verifier/verifier_register.py", title="Verifier | Register"),
+]
+
+pg = st.navigation(pages)
+pg.run()

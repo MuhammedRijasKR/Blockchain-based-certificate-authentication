@@ -7,7 +7,7 @@ import requests
 import streamlit as st
 from PIL import Image
 from connection import contract
-from utils.pinata_utils import get_metadata_from_pinata
+from pinata_utils import get_metadata_from_pinata
 
 def displayPDF(file):
     # Opening file from file path

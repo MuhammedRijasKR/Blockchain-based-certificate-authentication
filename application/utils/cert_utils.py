@@ -1,7 +1,8 @@
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 import pdfplumber
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
+
 
 def generate_certificate(output_path, uid, candidate_name, course_name, org_name, institute_logo_path):
     # Create a PDF document
@@ -76,5 +77,4 @@ def extract_certificate(pdf_path):
         uid = lines[5]
         course_name = lines[-1]
 
-        return (uid, candidate_name, course_name, org_name)
-    
+        return uid, candidate_name, course_name, org_name
