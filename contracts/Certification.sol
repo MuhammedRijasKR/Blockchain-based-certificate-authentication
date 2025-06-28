@@ -11,6 +11,8 @@ contract Certification {
     }
 
     mapping(string => Certificate) public certificates;
+    string[] private certificateIds;
+
     event certificateGenerated(string certificate_id);
 
     function generateCertificate(
@@ -38,6 +40,7 @@ contract Certification {
 
         // Store the certificate in the mapping
         certificates[_certificate_id] = cert;
+        certificateIds.push(_certificate_id);
 
         // Emit an event
         emit certificateGenerated(_certificate_id);
@@ -60,11 +63,10 @@ contract Certification {
 
         // Check if the certificate with the given ID exists
         require(
-            bytes(certificates[_certificate_id].ipfs_hash).length != 0,
+            bytes(cert.ipfs_hash).length != 0,
             "Certificate with this ID does not exist"
         );
 
-        // Return the values from the certificate
         return (
             cert.uid,
             cert.candidate_name,
@@ -78,5 +80,9 @@ contract Certification {
         string memory _certificate_id
     ) public view returns (bool) {
         return bytes(certificates[_certificate_id].ipfs_hash).length != 0;
+    }
+
+    function getAllCertificateIds() public view returns (string[] memory) {
+        return certificateIds;
     }
 }

@@ -5,7 +5,7 @@ import streamlit as st
 from connection import contract, w3
 from dotenv import load_dotenv
 from utils.auth import AuthManager
-from utils.cert_utils import generate_certificate
+from utils.cert_utils import generate_certificate, get_certificate_id_ipfs_hash
 from utils.pinata_utils import upload_to_pinata, delete_pinata_file, get_pinata_files
 from utils.streamlit_utils import hide_sidebar
 from utils.streamlit_utils import view_certificate, get_next_uid, uid_created
@@ -36,12 +36,13 @@ if selected == "List Of Certificate":
             name = f['metadata'].get('name', 'Unnamed')
             ipfs_hash = f['ipfs_pin_hash']
             link = f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
+            certificate_id = get_certificate_id_ipfs_hash(ipfs_hash) or "Certificate is not in blockchain"
 
-            col1, col2, col3 = st.columns([2, 6, 2])
+            col1, col2, col3, col4 = st.columns([2, 3, 4, 2])
             col1.markdown(f"**{count}**")
             col2.markdown(f"[🔗 {name}]({link})", unsafe_allow_html=True)
-
-            if col3.button("Revoke", key=ipfs_hash):
+            col3.markdown(f"`{certificate_id}`")
+            if col4.button("Revoke", key=ipfs_hash):
                 if delete_pinata_file(ipfs_hash):
                     files.clear()
                     st.rerun()

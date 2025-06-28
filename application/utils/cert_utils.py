@@ -3,6 +3,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 
+from connection import contract
+
 
 def generate_certificate(output_path, uid, candidate_name, course_name, org_name, institute_logo_path):
     # Create a PDF document
@@ -78,3 +80,12 @@ def extract_certificate(pdf_path):
         course_name = lines[-1]
 
         return uid, candidate_name, course_name, org_name
+
+
+def get_certificate_id_ipfs_hash(ipfs_hash):
+    certificate_ids = contract.functions.getAllCertificateIds().call()
+    for certificate_id in certificate_ids:
+        certificate = contract.functions.getCertificate(certificate_id).call()
+        if certificate[4] == ipfs_hash:
+            return certificate_id
+    return None
