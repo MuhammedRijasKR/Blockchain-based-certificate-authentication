@@ -21,12 +21,12 @@ def displayPDF(file):
     st.markdown(pdf_display, unsafe_allow_html=True)
 
 
-def view_certificate(certificate_id, user_email):
+def view_certificate(certificate_id, user_email=None):
     # Smart Contract Call
     result = contract.functions.getCertificate(certificate_id).call()
     ipfs_hash = result[4]
     metadata = get_metadata_from_pinata(ipfs_hash)
-    if metadata.get("keyvalues", {}).get("user_email") != str(user_email):
+    if user_email is not None and metadata and metadata.get("keyvalues", {}).get("user_email") != str(user_email):
         raise Exception("User email does not match")
 
     pinata_gateway_base_url = 'https://gateway.pinata.cloud/ipfs'

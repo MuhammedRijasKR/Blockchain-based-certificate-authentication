@@ -76,4 +76,5 @@ elif selected == options[1]:
                 else:
                     st.error("❌ Certificate ID is INVALID or not found.")
             except Exception as e:
+                print(e)
                 st.error("❌ Error validating certificate. Please check the Certificate ID.")
