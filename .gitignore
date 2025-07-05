@@ -8,3 +8,4 @@ venv/
 .idea/
 application/.streamlit_auth.json
 application/*.json
+application/keys/

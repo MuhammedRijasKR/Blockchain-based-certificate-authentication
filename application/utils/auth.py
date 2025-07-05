@@ -4,7 +4,7 @@ import time
 
 import streamlit as st
 from db.firebase_app import register, login, get_user_role
-
+from utils.signature_utils import generate_key_pair, save_public_key_to_pem, save_private_key_to_pem
 
 class AuthManager:
     login_required_redirect_page = {
@@ -64,6 +64,9 @@ class AuthManager:
     @staticmethod
     def register_user(email, password, role):
         """Register new user"""
+        key_pair = generate_key_pair()
+        save_private_key_to_pem(key_pair.get('private_key'), email)
+        save_public_key_to_pem(key_pair.get('public_key'), email)
         return register(email, password, role)
 
     @staticmethod

@@ -9,6 +9,7 @@ from utils.cert_utils import generate_certificate, get_certificate_id_ipfs_hash
 from utils.pinata_utils import upload_to_pinata, delete_pinata_file, get_pinata_files
 from utils.streamlit_utils import hide_sidebar
 from utils.streamlit_utils import view_certificate, get_next_uid, uid_created
+from utils.signature_utils import load_private_key_from_pem, sign_data, load_public_key_from_pem
 
 hide_sidebar()
 auth = AuthManager()
@@ -79,11 +80,13 @@ elif selected == "Generate Certificate":
                     if ipfs_hash:
                         data = f"{uid}{candidate_name}{course_name}{org_name}".encode("utf-8")
                         certificate_id = hashlib.sha256(data).hexdigest()
+                        private_key = load_private_key_from_pem(st.session_state.user_email)
+                        signature = sign_data(data, private_key)
 
                         # Store on Blockchain
                         try:
                             contract.functions.generateCertificate(
-                                certificate_id, uid, candidate_name, course_name, org_name, ipfs_hash
+                                certificate_id, uid, candidate_name, course_name, org_name, ipfs_hash, signature
                             ).transact({'from': w3.eth.accounts[0]})
                             uid_created(next_uid)
 

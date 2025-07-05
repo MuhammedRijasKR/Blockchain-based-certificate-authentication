@@ -7,6 +7,7 @@ from utils.cert_utils import extract_certificate
 from utils.streamlit_utils import view_certificate, displayPDF
 from utils.auth import AuthManager
 from utils.streamlit_utils import hide_sidebar
+from utils.signature_utils import verify_signature, load_public_key_from_pem
 
 hide_sidebar()
 auth = AuthManager()
@@ -58,23 +59,30 @@ if selected == options[0]:
 # --- Option 2: Enter Certificate ID ---
 elif selected == options[1]:
     with st.form("Validate-Certificate"):
+        institute_email = st.text_input("Enter Institute Email")
         certificate_id = st.text_input("Enter the Certificate ID")
         submit = st.form_submit_button("Validate")
 
     if submit:
-        if not certificate_id.strip():
-            st.warning("Please enter a certificate ID.")
+        if not certificate_id.strip() and not institute_email.strip():
+            st.warning("Please enter all details")
         else:
             try:
-                # Show certificate
-                view_certificate(certificate_id)
-
                 # Smart Contract Call
                 result = contract.functions.isVerified(certificate_id).call()
+                cert = contract.functions.getCertificate(certificate_id).call()
+                data = f"{cert[0]}{cert[1]}{cert[2]}{cert[3]}".encode("utf-8")
+                signature = cert[5]
+                public_key = load_public_key_from_pem(institute_email)
+
                 if result:
-                    st.success("🎉 Certificate is VALID and registered on blockchain.")
+                    if verify_signature(data, signature, public_key):
+                        st.success("🎉 Certificate signature is VALID and registered on blockchain.")
+                        with st.spinner("Fetching certificate..."):
+                            view_certificate(certificate_id)
                 else:
-                    st.error("❌ Certificate ID is INVALID or not found.")
+                    st.error("❌ Certificate ID or signature is INVALID or not found.")
+
             except Exception as e:
                 print(e)
                 st.error("❌ Error validating certificate. Please check the Certificate ID.")

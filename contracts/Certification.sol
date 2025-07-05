@@ -8,6 +8,7 @@ contract Certification {
         string course_name;
         string org_name;
         string ipfs_hash;
+        string signature;
     }
 
     mapping(string => Certificate) public certificates;
@@ -21,7 +22,8 @@ contract Certification {
         string memory _candidate_name,
         string memory _course_name,
         string memory _org_name,
-        string memory _ipfs_hash
+        string memory _ipfs_hash,
+        string memory _signature
     ) public {
         // Check if certificate with the given ID already exists
         require(
@@ -35,7 +37,8 @@ contract Certification {
             candidate_name: _candidate_name,
             course_name: _course_name,
             org_name: _org_name,
-            ipfs_hash: _ipfs_hash
+            ipfs_hash: _ipfs_hash,
+            signature: _signature
         });
 
         // Store the certificate in the mapping
@@ -56,7 +59,8 @@ contract Certification {
             string memory _candidate_name,
             string memory _course_name,
             string memory _org_name,
-            string memory _ipfs_hash
+            string memory _ipfs_hash,
+            string memory _signature
         )
     {
         Certificate memory cert = certificates[_certificate_id];
@@ -72,7 +76,8 @@ contract Certification {
             cert.candidate_name,
             cert.course_name,
             cert.org_name,
-            cert.ipfs_hash
+            cert.ipfs_hash,
+            cert.signature
         );
     }
 
