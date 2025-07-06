@@ -3,4 +3,9 @@
 .vscode
 deployment_config.json
 build/
-venv
+venv/
+.venv/
+.idea/
+application/.streamlit_auth.json
+application/*.json
+application/keys/

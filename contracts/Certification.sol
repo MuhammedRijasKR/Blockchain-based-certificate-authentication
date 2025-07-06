@@ -8,9 +8,12 @@ contract Certification {
         string course_name;
         string org_name;
         string ipfs_hash;
+        string signature;
     }
 
     mapping(string => Certificate) public certificates;
+    string[] private certificateIds;
+
     event certificateGenerated(string certificate_id);
 
     function generateCertificate(
@@ -19,7 +22,8 @@ contract Certification {
         string memory _candidate_name,
         string memory _course_name,
         string memory _org_name,
-        string memory _ipfs_hash
+        string memory _ipfs_hash,
+        string memory _signature
     ) public {
         // Check if certificate with the given ID already exists
         require(
@@ -33,11 +37,13 @@ contract Certification {
             candidate_name: _candidate_name,
             course_name: _course_name,
             org_name: _org_name,
-            ipfs_hash: _ipfs_hash
+            ipfs_hash: _ipfs_hash,
+            signature: _signature
         });
 
         // Store the certificate in the mapping
         certificates[_certificate_id] = cert;
+        certificateIds.push(_certificate_id);
 
         // Emit an event
         emit certificateGenerated(_certificate_id);
@@ -53,24 +59,25 @@ contract Certification {
             string memory _candidate_name,
             string memory _course_name,
             string memory _org_name,
-            string memory _ipfs_hash
+            string memory _ipfs_hash,
+            string memory _signature
         )
     {
         Certificate memory cert = certificates[_certificate_id];
 
         // Check if the certificate with the given ID exists
         require(
-            bytes(certificates[_certificate_id].ipfs_hash).length != 0,
+            bytes(cert.ipfs_hash).length != 0,
             "Certificate with this ID does not exist"
         );
 
-        // Return the values from the certificate
         return (
             cert.uid,
             cert.candidate_name,
             cert.course_name,
             cert.org_name,
-            cert.ipfs_hash
+            cert.ipfs_hash,
+            cert.signature
         );
     }
 
@@ -78,5 +85,9 @@ contract Certification {
         string memory _certificate_id
     ) public view returns (bool) {
         return bytes(certificates[_certificate_id].ipfs_hash).length != 0;
+    }
+
+    function getAllCertificateIds() public view returns (string[] memory) {
+        return certificateIds;
     }
 }

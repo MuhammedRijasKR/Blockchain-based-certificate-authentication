@@ -1,6 +1,9 @@
+import os
+
+import firebase_admin
 import pyrebase
 from dotenv import load_dotenv
-import os
+from firebase_admin import credentials, auth as admin_auth
 
 load_dotenv()
 
@@ -17,19 +20,46 @@ config = {
 firebase = pyrebase.initialize_app(config)
 auth = firebase.auth()
 
+if not firebase_admin._apps:
+    cred = credentials.Certificate("serviceAccountKey.json")
+    firebase_admin.initialize_app(cred)
 
-def register(email, password):
+
+def set_user_role(email, role):
+    try:
+        user = admin_auth.get_user_by_email(email)
+        admin_auth.set_custom_user_claims(user.uid, {"role": role})
+        return True
+    except Exception as e:
+        print(f"Error setting role: {e}")
+        return False
+
+
+def get_user_role(id_token):
+    try:
+        decoded = admin_auth.verify_id_token(id_token, clock_skew_seconds=60)
+        return decoded.get("role", "none")
+    except Exception as e:
+        print(f"Error verifying token: {e}")
+        return None
+
+
+def register(email, password, role):
     try:
         auth.create_user_with_email_and_password(email, password)
-        return "success"
+        set_user_role(email, role)
+        return True
     except Exception as e:
         print(f"Error: {e}")
-        return "failure"
+        return False
+
 
 def login(email, password):
     try:
-        auth.sign_in_with_email_and_password(email, password)
-        return "success"
+        user = auth.sign_in_with_email_and_password(email, password)
+        if user:
+            return user.get("idToken")
+        return False
     except Exception as e:
-        print(f"Error: {e}")
-        return "failure"
+        print(f"Login_Error: {e}")
+        return False
