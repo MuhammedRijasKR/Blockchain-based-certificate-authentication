@@ -31,12 +31,13 @@ if selected == options[0]:
 
         try:
             # Extract and show certificate contents
-            uid, candidate_name, course_name, org_name = extract_certificate("temp_certificate.pdf")
+            uid, email, candidate_name, course_name, org_name = extract_certificate("temp_certificate.pdf")
             st.success("✅ Certificate data extracted successfully:")
             st.write(f"- **UID**: {uid}")
             st.write(f"- **Candidate Name**: {candidate_name}")
             st.write(f"- **Course**: {course_name}")
             st.write(f"- **Organization**: {org_name}")
+            st.write(f"- **Organization Email**: {email}")
 
             # Generate hash
             data_to_hash = f"{uid}{candidate_name}{course_name}{org_name}".encode('utf-8')
@@ -46,6 +47,7 @@ if selected == options[0]:
             result = contract.functions.isVerified(certificate_id).call()
 
             if result:
+                st.write(f"- **Certificate ID**: {certificate_id}")
                 st.success("🎉 Certificate is VALID and registered on blockchain.")
             else:
                 st.error("❌ Certificate is INVALID or not registered.")

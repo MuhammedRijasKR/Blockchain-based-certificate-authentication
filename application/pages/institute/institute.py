@@ -72,7 +72,7 @@ elif selected == "Generate Certificate":
                     pdf_file_path = f"{uid}_{candidate_name.strip().replace(" ", "_").lower()}.pdf"
                     institute_logo_path = "../assets/logo.jpg"
 
-                    generate_certificate(pdf_file_path, uid, candidate_name, course_name, org_name, institute_logo_path)
+                    generate_certificate(pdf_file_path, uid, candidate_name, course_name, org_name, institute_logo_path, st.session_state.user_email)
 
                     ipfs_hash = upload_to_pinata(pdf_file_path, st.session_state.user_email)
                     os.remove(pdf_file_path)

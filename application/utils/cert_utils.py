@@ -1,19 +1,18 @@
 import pdfplumber
+from connection import contract
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 
-from connection import contract
 
-
-def generate_certificate(output_path, uid, candidate_name, course_name, org_name, institute_logo_path):
+def generate_certificate(output_path, uid, candidate_name, course_name, org_name, institute_logo_path, institute_email):
     # Create a PDF document
     doc = SimpleDocTemplate(output_path, pagesize=letter)
 
     # Create a list to hold the elements of the PDF
     elements = []
 
-    # Add institute logo and institute name
+    # Add institute logo
     if institute_logo_path:
         logo = Image(institute_logo_path, width=150, height=150)
         elements.append(logo)
@@ -24,10 +23,21 @@ def generate_certificate(output_path, uid, candidate_name, course_name, org_name
         parent=getSampleStyleSheet()["Title"],
         fontName="Helvetica-Bold",
         fontSize=15,
-        spaceAfter=40,
+        spaceAfter=10,
     )
     institute = Paragraph(org_name, institute_style)
-    elements.extend([institute, Spacer(1, 12)])
+    elements.append(institute)
+
+    email_style = ParagraphStyle(
+        "EmailStyle",
+        parent=getSampleStyleSheet()["Normal"],
+        fontName="Helvetica",
+        fontSize=10,
+        textColor="gray",
+        spaceAfter=30,
+    )
+    email_paragraph = Paragraph(f"Email: {institute_email}", email_style)
+    elements.extend([email_paragraph, Spacer(1, 12)])
 
     # Add title
     title_style = ParagraphStyle(
@@ -40,7 +50,7 @@ def generate_certificate(output_path, uid, candidate_name, course_name, org_name
     title1 = Paragraph("Certificate of Completion", title_style)
     elements.extend([title1, Spacer(1, 6)])
 
-    # Add recipient name, UID, and course name with increased line space
+    # Add recipient name, UID, and course name
     recipient_style = ParagraphStyle(
         "RecipientStyle",
         parent=getSampleStyleSheet()["BodyText"],
@@ -53,7 +63,7 @@ def generate_certificate(output_path, uid, candidate_name, course_name, org_name
     recipient_text = f"This is to certify that<br/><br/>\
                      <font color='red'> {candidate_name} </font><br/>\
                      with UID <br/> \
-                    <font color='red'> {uid} </font> <br/><br/>\
+                     <font color='red'> {uid} </font> <br/><br/>\
                      has successfully completed the course:<br/>\
                      <font color='blue'> {course_name} </font>"
 
@@ -73,13 +83,15 @@ def extract_certificate(pdf_path):
         for page in pdf.pages:
             text += page.extract_text()
         lines = text.splitlines()
+        print(lines)
 
         org_name = lines[0]
-        candidate_name = lines[3]
-        uid = lines[5]
+        email = lines[1]
+        candidate_name = lines[4]
+        uid = lines[6]
         course_name = lines[-1]
 
-        return uid, candidate_name, course_name, org_name
+        return uid, email, candidate_name, course_name, org_name
 
 
 def get_certificate_id_ipfs_hash(ipfs_hash):
