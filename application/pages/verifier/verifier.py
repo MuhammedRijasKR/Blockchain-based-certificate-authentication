@@ -20,7 +20,7 @@ st.markdown("<h2 style='text-align: center;'>✅ Certificate Verification</h2>",
 st.markdown("##")
 
 # --- Options ---
-options = ("Verify using PDF", "Verify using Certificate ID", "Institute Verification", "Import Institute Credentials")
+options = ("Verify using PDF", "Verify using Certificate ID", "Institute Verification")
 selected = st.selectbox("Select an option", options, label_visibility="collapsed")
 
 # --- Option 1: Upload Certificate PDF ---
@@ -220,36 +220,3 @@ elif selected == options[2]:
                 
             except Exception as e:
                 st.error("❌ Institute not found in the system.")
-
-# --- Option 4: Import Institute Credentials ---
-elif selected == options[3]:
-    st.markdown("### 🔑 Import Institute Credentials")
-    st.write("Import institute credentials for offline verification.")
-    
-    uploaded_credentials = st.file_uploader("Upload Institute Credentials JSON file", type=['json'])
-    
-    if uploaded_credentials:
-        try:
-            credentials = json.load(uploaded_credentials)
-            institute_email = credentials.get('institute_email')
-            public_key = credentials.get('public_key')
-            
-            if institute_email and public_key:
-                st.success("✅ Credentials imported successfully!")
-                st.write(f"**Institute**: {institute_email}")
-                
-                # Save public key for verification
-                institute_dir = os.path.join("keys", institute_email)
-                os.makedirs(institute_dir, exist_ok=True)
-                public_key_path = os.path.join(institute_dir, "public_key.pem")
-                
-                with open(public_key_path, 'w') as f:
-                    f.write(public_key)
-                
-                st.success("✅ Public key saved for verification!")
-                st.info("You can now verify certificates issued by this institute.")
-            else:
-                st.error("❌ Invalid credentials file format.")
-                
-        except Exception as e:
-            st.error(f"❌ Error importing credentials: {str(e)}")

@@ -20,11 +20,22 @@ auth.require_auth(allowed_roles=("institute",))
 
 load_dotenv()
 
-# --- UI: Role Selection ---
-st.markdown("<h2 style='text-align: center;'>🎓 Certificate Validation System</h2>", unsafe_allow_html=True)
-st.write("")
+# Check if the current user is already registered as an institute
+is_registered = False
+try:
+    institute_info = contract.functions.getInstitute(st.session_state.user_email).call()
+    if institute_info[0]:  # If name exists
+        is_registered = True
+except Exception:
+    is_registered = False
 
-options = ("Institute Registration", "List Of Certificate", "Generate Certificate", "View Certificates", "Export Credentials")
+# Only show registration option if not registered
+options = [
+    *( ["Institute Registration"] if not is_registered else [] ),
+    "List Of Certificate",
+    "Generate Certificate",
+    "View Certificates"
+]
 selected = st.selectbox("Select an option", options, label_visibility="collapsed")
 
 # --- Institute Registration ---
@@ -64,6 +75,8 @@ if selected == "Institute Registration":
                     # Immediately verify the institute
                     contract.functions.verifyInstitute(institute_email).transact({'from': w3.eth.accounts[0]})
                     st.success("✅ Institute registered and automatically verified! You can now issue certificates.")
+                    st.session_state["_institute_registered"] = True
+                    st.rerun()
                 except Exception as e:
                     st.error(f"❌ Registration failed: {str(e)}")
 
@@ -195,27 +208,3 @@ elif selected == "View Certificates":
                     except Exception as e:
                         print(e)
                         st.error("❌ Invalid Certificate ID or blockchain error.")
-
-# --- Export Credentials ---
-elif selected == "Export Credentials":
-    st.markdown("### 🔑 Export Institute Credentials")
-    st.write("Export your institute's public key for external verification.")
-    
-    institute_email = st.session_state.user_email
-    credentials = crypto_auth.export_institute_credentials(institute_email)
-    
-    if credentials:
-        st.json(credentials)
-        
-        # Create download button for credentials
-        credentials_json = json.dumps(credentials, indent=2)
-        st.download_button(
-            label="📥 Download Credentials",
-            data=credentials_json,
-            file_name=f"{institute_email}_credentials.json",
-            mime="application/json"
-        )
-        
-        st.info("💡 Share this file with employers or verification services to verify your certificates.")
-    else:
-        st.error("❌ No credentials found. Please register your institute first.")
