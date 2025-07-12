@@ -7,3 +7,4 @@ requests
 streamlit
 streamlit_extras
 web3
+cryptography
