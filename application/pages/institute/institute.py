@@ -188,6 +188,26 @@ elif selected == "Generate Certificate":
                             st.success(f"✅ Certificate created with digital signature!")
                             st.success(f"Certificate ID: `{certificate_id}`")
                             st.info("🔐 This certificate is digitally signed and can be verified by employers.")
+
+                            # Fetch the PDF from IPFS and display it, provide download button
+                            import requests
+                            pinata_gateway_base_url = 'https://gateway.pinata.cloud/ipfs'
+                            content_url = f"{pinata_gateway_base_url}/{ipfs_hash}"
+                            response = requests.get(content_url)
+                            if response.status_code == 200:
+                                pdf_bytes = response.content
+                                import base64
+                                base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+                                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="700" height="1000" type="application/pdf"></iframe>'
+                                st.markdown(pdf_display, unsafe_allow_html=True)
+                                st.download_button(
+                                    label="📥 Download Certificate PDF",
+                                    data=pdf_bytes,
+                                    file_name=pdf_file_path,
+                                    mime="application/pdf"
+                                )
+                            else:
+                                st.warning("Could not fetch the certificate PDF from IPFS.")
                         except Exception as e:
                             st.error(f"⚠️ Blockchain transaction failed: {str(e)}")
 
