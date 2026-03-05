@@ -1,6 +1,8 @@
-.PHONY: run ganache migrate app build redeploy
+.PHONY: run ganache migrate app build redeploy venv fresh
 
 run: ganache migrate app
+
+fresh: ganache redeploy app
 
 ganache:
 	@echo "Starting Ganache..."
@@ -28,5 +30,9 @@ build:
 	npm install -g ganache-cli
 
 	@echo "Setting up Python virtual environment..."
-	python -m venv .venv
+	python -m venv venv
 	.venv\Scripts\activate && pip install -r application/requirements.txt
+venv:
+	@cmd /K "venv\Scripts\activate"
+
+

@@ -10,11 +10,13 @@ class AuthManager:
     login_required_redirect_page = {
         "verifier": "pages/verifier/login.py",
         "institute": "pages/institute/login.py",
+        "admin": "pages/admin/admin_login.py",
     }
     access_denied_redirect_page = {
         "home": "pages/home.py",
         "verifier": "pages/verifier/verifier.py",
         "institute": "pages/institute/institute.py",
+        "admin": "pages/admin/admin.py",
     }
 
     AUTH_FILE = ".streamlit_auth.json"

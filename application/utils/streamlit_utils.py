@@ -8,6 +8,8 @@ import streamlit as st
 from PIL import Image
 from connection import contract
 from utils.pinata_utils import get_metadata_from_pinata
+from utils.encryption_utils import get_encryption_key, decrypt_file
+
 
 def displayPDF(file):
     # Opening file from file path
@@ -21,21 +23,38 @@ def displayPDF(file):
     st.markdown(pdf_display, unsafe_allow_html=True)
 
 
-def view_certificate(certificate_id, user_email=None):
+def view_certificate(certificate_id, user_email=None, user_role=None):
     # Smart Contract Call
     result = contract.functions.getCertificate(certificate_id).call()
     ipfs_hash = result[4]
     metadata = get_metadata_from_pinata(ipfs_hash)
-    if user_email is not None and metadata and metadata.get("keyvalues", {}).get("user_email") != str(user_email):
+    if user_email is not None and user_role == "institute" and metadata and metadata.get("keyvalues", {}).get("user_email") != str(user_email):
         raise Exception("User email does not match")
+
+    # Get encryption key with access control
+    if user_role is None:
+        user_role = st.session_state.get("user_role", "verifier")
+    if user_email is None:
+        user_email = st.session_state.get("user_email", "")
+
+    encryption_key = get_encryption_key(certificate_id, user_email, user_role)
 
     pinata_gateway_base_url = 'https://gateway.pinata.cloud/ipfs'
     content_url = f"{pinata_gateway_base_url}/{ipfs_hash}"
     response = requests.get(content_url)
-    with open("temp.pdf", 'wb') as pdf_file:
-        pdf_file.write(response.content)
-    displayPDF("temp.pdf")
-    os.remove("temp.pdf")
+
+    if encryption_key:
+        # Decrypt the PDF
+        try:
+            decrypted_bytes = decrypt_file(response.content, encryption_key)
+            with open("temp.pdf", 'wb') as pdf_file:
+                pdf_file.write(decrypted_bytes)
+            displayPDF("temp.pdf")
+            os.remove("temp.pdf")
+        except Exception as e:
+            st.error(f"❌ Failed to decrypt certificate: {str(e)}")
+    else:
+        st.error("🔒 Access denied: You do not have permission to view this certificate.")
 
 
 def hide_icons():

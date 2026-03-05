@@ -5,7 +5,6 @@ import json
 import streamlit as st
 from connection import contract
 from utils.cert_utils import extract_certificate
-from utils.streamlit_utils import view_certificate, displayPDF
 from utils.auth import AuthManager
 from utils.streamlit_utils import hide_sidebar
 from utils.crypto_utils import DigitalCertificateAuth
@@ -32,21 +31,41 @@ if selected == options[0]:
             file.write(uploaded_file.getvalue())
 
         try:
-            # Extract and show certificate contents
+            # Extract certificate contents (not displayed to verifier)
             uid, candidate_name, course_name, org_name = extract_certificate("temp_certificate.pdf")
-            st.success("✅ Certificate data extracted successfully:")
-            st.write(f"- **UID**: {uid}")
-            st.write(f"- **Candidate Name**: {candidate_name}")
-            st.write(f"- **Course**: {course_name}")
-            st.write(f"- **Organization**: {org_name}")
+            os.remove("temp_certificate.pdf")
 
-            # Generate hash
-            data_to_hash = f"{uid}{candidate_name}{course_name}{org_name}".encode('utf-8')
-            certificate_id = hashlib.sha256(data_to_hash).hexdigest()
+            st.info("📄 Certificate data extracted. Verifying on blockchain...")
+
+            # Try to find the certificate by matching fields to get the salt
+            all_cert_ids = contract.functions.getAllCertificateIds().call()
+            certificate_id = None
+            salt = None
+            
+            for cid in all_cert_ids:
+                try:
+                    cd = contract.functions.getCertificate(cid).call()
+                    if cd[0] == uid and cd[1] == candidate_name and cd[2] == course_name and cd[3] == org_name:
+                        certificate_id = cid
+                        salt = cd[7]  # salt field
+                        break
+                except Exception:
+                    continue
+            
+            if certificate_id is None:
+                st.error("❌ Certificate not found on blockchain.")
+                st.stop()
+
+            # Verify the hash with salt
+            data_to_hash = f"{salt}{uid}{candidate_name}{course_name}{org_name}".encode('utf-8')
+            expected_hash = hashlib.sha256(data_to_hash).hexdigest()
+            
+            if expected_hash != certificate_id:
+                st.error("❌ Certificate hash mismatch - data may have been tampered!")
+                st.stop()
 
             # Check if certificate exists on blockchain
             try:
-                # Get certificate data to check if it exists
                 cert_data = contract.functions.getCertificate(certificate_id).call()
                 
                 # Check if revoked
@@ -62,20 +81,19 @@ if selected == options[0]:
                         st.success("🎉 Certificate is VALID and registered on blockchain.")
                         
                         # Verify digital signature
-                        institute_email = cert_data[5]  # institute_email
-                        digital_signature = cert_data[6]  # digital_signature
+                        institute_email = cert_data[5]
+                        digital_signature = cert_data[6]
                         
-                        # Create certificate data for verification
                         certificate_data = {
                             "uid": uid,
                             "candidate_name": candidate_name,
                             "course_name": course_name,
                             "org_name": org_name,
-                            "ipfs_hash": cert_data[4],  # ipfs_hash
-                            "certificate_id": certificate_id
+                            "ipfs_hash": cert_data[4],
+                            "certificate_id": certificate_id,
+                            "salt": salt
                         }
                         
-                        # Verify signature
                         signature_valid = crypto_auth.verify_certificate_signature(
                             institute_email, 
                             certificate_data, 
@@ -84,27 +102,24 @@ if selected == options[0]:
                         
                         if signature_valid:
                             st.success("🔐 Digital signature is VALID - Certificate is authentic!")
-                            
-                            # Get institute info
-                            try:
-                                institute_info = contract.functions.getInstitute(institute_email).call()
-                                st.info(f"🏛️ **Issuing Institute**: {institute_info[0]} ({institute_email})")
-                                if institute_info[2]:  # is_verified
-                                    st.success("✅ Institute is verified by the system")
-                                else:
-                                    st.warning("⚠️ Institute is not verified by the system")
-                            except:
-                                st.warning("⚠️ Could not retrieve institute information")
                         else:
                             st.error("❌ Digital signature is INVALID - Certificate may be tampered!")
+                        
+                        # Show institute verification status (no sensitive data)
+                        try:
+                            institute_info = contract.functions.getInstitute(institute_email).call()
+                            st.info(f"🏛️ **Issuing Institute**: {institute_info[0]}")
+                            if institute_info[2]:
+                                st.success("✅ Institute is verified by the system")
+                            else:
+                                st.warning("⚠️ Institute is not verified by the system")
+                        except:
+                            st.warning("⚠️ Could not retrieve institute information")
                     else:
                         st.error("❌ Certificate is INVALID or not registered.")
                         
             except Exception as e:
                 st.error("❌ Certificate not found on blockchain.")
-
-            displayPDF("temp_certificate.pdf")
-            os.remove("temp_certificate.pdf")
 
         except Exception as e:
             st.error("❌ Could not process this certificate. It might be tampered or corrupted.")
@@ -112,9 +127,9 @@ if selected == options[0]:
 # --- Option 2: Enter Certificate ID ---
 elif selected == options[1]:
     with st.form("Validate-Certificate"):
-        st.markdown("#### Enter your Certificate ID to view it")
+        st.markdown("#### Enter the Certificate ID to verify")
         certificate_id = st.text_input("Certificate ID")
-        submit = st.form_submit_button("Validate")
+        submit = st.form_submit_button("Verify")
 
     if submit:
         if not certificate_id.strip():
@@ -129,36 +144,26 @@ elif selected == options[1]:
                 
                 if is_revoked:
                     st.error("❌ Certificate has been REVOKED and is no longer valid.")
-                    st.info("Certificate details (for reference):")
-                    st.write(f"- **UID**: {cert_data[0]}")
-                    st.write(f"- **Candidate Name**: {cert_data[1]}")
-                    st.write(f"- **Course**: {cert_data[2]}")
-                    st.write(f"- **Organization**: {cert_data[3]}")
-                    st.write(f"- **Institute**: {cert_data[5]}")
                 else:
-                    # Show certificate
-                    view_certificate(certificate_id)
-
-                    # Smart Contract Call
+                    # Verify on blockchain (no PDF display for verifier)
                     result = contract.functions.isVerified(certificate_id).call()
                     if result:
                         st.success("🎉 Certificate is VALID and registered on blockchain.")
                         
                         # Verify digital signature
-                        institute_email = cert_data[5]  # institute_email
-                        digital_signature = cert_data[6]  # digital_signature
+                        institute_email = cert_data[5]
+                        digital_signature = cert_data[6]
                         
-                        # Create certificate data for verification
                         certificate_data = {
                             "uid": cert_data[0],
                             "candidate_name": cert_data[1],
                             "course_name": cert_data[2],
                             "org_name": cert_data[3],
                             "ipfs_hash": cert_data[4],
-                            "certificate_id": certificate_id
+                            "certificate_id": certificate_id,
+                            "salt": cert_data[7]
                         }
                         
-                        # Verify signature
                         signature_valid = crypto_auth.verify_certificate_signature(
                             institute_email, 
                             certificate_data, 
@@ -167,19 +172,19 @@ elif selected == options[1]:
                         
                         if signature_valid:
                             st.success("🔐 Digital signature is VALID - Certificate is authentic!")
-                            
-                            # Get institute info
-                            try:
-                                institute_info = contract.functions.getInstitute(institute_email).call()
-                                st.info(f"🏛️ **Issuing Institute**: {institute_info[0]} ({institute_email})")
-                                if institute_info[2]:  # is_verified
-                                    st.success("✅ Institute is verified by the system")
-                                else:
-                                    st.warning("⚠️ Institute is not verified by the system")
-                            except:
-                                st.warning("⚠️ Could not retrieve institute information")
                         else:
                             st.error("❌ Digital signature is INVALID - Certificate may be tampered!")
+                        
+                        # Show institute verification status (no sensitive data)
+                        try:
+                            institute_info = contract.functions.getInstitute(institute_email).call()
+                            st.info(f"🏛️ **Issuing Institute**: {institute_info[0]}")
+                            if institute_info[2]:
+                                st.success("✅ Institute is verified by the system")
+                            else:
+                                st.warning("⚠️ Institute is not verified by the system")
+                        except:
+                            st.warning("⚠️ Could not retrieve institute information")
                     else:
                         st.error("❌ Certificate ID is INVALID or not found.")
                         

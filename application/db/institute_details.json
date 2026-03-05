@@ -1,0 +1,30 @@
+{
+  "gect@bc.com": {
+    "institute_name": "Government Engineering College Trissur",
+    "institute_type": "College",
+    "established_year": "2000",
+    "phone_number": "9999999999",
+    "website": "gect.com",
+    "address": "trissur",
+    "registration_number": "12121212",
+    "accreditation": "NAAC A",
+    "contact_person_name": "Name",
+    "contact_person_designation": "Princ",
+    "contact_person_phone": "9999999999",
+    "submitted_at": "2026-02-04T11:20:01.213602"
+  },
+  "cet@bc.com": {
+    "institute_name": "College of Engineering TVM",
+    "institute_type": "College",
+    "established_year": "1990",
+    "phone_number": "9876543210",
+    "website": "",
+    "address": "TVM",
+    "registration_number": "12345678",
+    "accreditation": "",
+    "contact_person_name": "John",
+    "contact_person_designation": "reg",
+    "contact_person_phone": "9876543210",
+    "submitted_at": "2026-03-03T16:24:37.814345"
+  }
+}

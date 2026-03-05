@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
 contract Certification {
@@ -10,6 +9,7 @@ contract Certification {
         string ipfs_hash;
         string institute_email;
         string digital_signature;
+        string salt;
         uint256 timestamp;
     }
 
@@ -71,7 +71,8 @@ contract Certification {
         string memory _org_name,
         string memory _ipfs_hash,
         string memory _institute_email,
-        string memory _digital_signature
+        string memory _digital_signature,
+        string memory _salt
     ) public {
         // Check if certificate with the given ID already exists
         require(
@@ -94,6 +95,7 @@ contract Certification {
             ipfs_hash: _ipfs_hash,
             institute_email: _institute_email,
             digital_signature: _digital_signature,
+            salt: _salt,
             timestamp: block.timestamp
         });
 
@@ -138,6 +140,7 @@ contract Certification {
             string memory _ipfs_hash,
             string memory _institute_email,
             string memory _digital_signature,
+            string memory _salt,
             uint256 _timestamp
         )
     {
@@ -157,6 +160,7 @@ contract Certification {
             cert.ipfs_hash,
             cert.institute_email,
             cert.digital_signature,
+            cert.salt,
             cert.timestamp
         );
     }

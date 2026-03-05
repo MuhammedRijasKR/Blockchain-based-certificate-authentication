@@ -30,6 +30,10 @@ pages = [
     st.Page("pages/verifier/verifier.py", title="Verifier"),
     st.Page("pages/verifier/verifier_login.py", title="Verifier | Login"),
     st.Page("pages/verifier/verifier_register.py", title="Verifier | Register"),
+
+    st.Page("pages/admin/admin.py", title="Admin"),
+    st.Page("pages/admin/admin_login.py", title="Admin | Login"),
+    st.Page("pages/admin/admin_register.py", title="Admin | Register"),
 ]
 
 pg = st.navigation(pages)

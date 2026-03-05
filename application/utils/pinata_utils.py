@@ -36,6 +36,34 @@ def upload_to_pinata(file_path, user_email):
             return None
 
 
+def upload_bytes_to_pinata(data_bytes, filename, user_email):
+    """Uploads raw bytes (e.g., encrypted data) to Pinata and returns IPFS hash."""
+    pinata_api_url = "https://api.pinata.cloud/pinning/pinFileToIPFS"
+    headers = {
+        "pinata_api_key": api_key,
+        "pinata_secret_api_key": api_secret,
+    }
+    metadata = {
+        "name": filename,
+        "keyvalues": {
+            "user_email": str(user_email),
+            "encrypted": "true"
+        }
+    }
+
+    from io import BytesIO
+    file_obj = BytesIO(data_bytes)
+    files = {"file": (filename, file_obj), "pinataMetadata": (None, json.dumps(metadata), "application/json")}
+    response = requests.post(pinata_api_url, headers=headers, files=files)
+    result = response.json()
+
+    if "IpfsHash" in result:
+        return result["IpfsHash"]
+    else:
+        st.error("Failed to upload encrypted file to Pinata.")
+        return None
+
+
 def get_pinata_files(user_email):
     url = "https://api.pinata.cloud/data/pinList"
     headers = {

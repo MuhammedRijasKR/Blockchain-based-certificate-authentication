@@ -14,29 +14,40 @@ st.markdown("<h4 style='text-align: center;'>Please select your role to continue
 st.markdown("##")
 
 # Layout columns for role selection
-col1, col2, col3 = st.columns([1, 2, 1])
+col1, col2, col3 = st.columns([1, 3, 1])
 with col2:
-    col_left, col_right = st.columns(2)
+    col_left, col_center, col_right = st.columns(3)
 
     with col_left:
         institute_logo = get_image_base64("../assets/institute_logo.png")
         institute_logo_html = f"""
-            <img src="data:image/png;base64,{institute_logo}" width="300" height="160">
+            <img src="data:image/png;base64,{institute_logo}" width="200" height="120">
         """
         st.markdown(institute_logo_html, unsafe_allow_html=True)
         st.markdown("<p style='text-align: center;'>Institute</p>", unsafe_allow_html=True)
 
         clicked_institute = st.button("Login as Institute", use_container_width=True)
 
-    with col_right:
+    with col_center:
         company_logo = get_image_base64("../assets/company_logo.jpg")
         company_logo_html = f"""
-                        <img src="data:image/png;base64,{company_logo}" width="300" height="160">
+                        <img src="data:image/png;base64,{company_logo}" width="200" height="120">
                     """
         st.markdown(company_logo_html, unsafe_allow_html=True)
         st.markdown("<p style='text-align: center;'>Verifier</p>", unsafe_allow_html=True)
 
         clicked_verifier = st.button("Login as Verifier", use_container_width=True)
+
+    with col_right:
+        # Admin section
+        st.markdown("""
+            <div style="display: flex; justify-content: center; align-items: center; height: 120px;">
+                <span style="font-size: 80px;">🛡️</span>
+            </div>
+        """, unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center;'>Admin</p>", unsafe_allow_html=True)
+
+        clicked_admin = st.button("Login as Admin", use_container_width=True)
 
 # Action handlers
 if clicked_institute:
@@ -45,3 +56,7 @@ if clicked_institute:
 elif clicked_verifier:
     st.session_state['profile'] = "Verifier"
     st.switch_page('pages/verifier/verifier_login.py')
+elif clicked_admin:
+    st.session_state['profile'] = "Admin"
+    st.switch_page('pages/admin/admin_login.py')
+
