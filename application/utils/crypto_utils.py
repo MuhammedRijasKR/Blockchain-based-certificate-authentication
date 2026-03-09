@@ -8,6 +8,16 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key, l
 from cryptography.x509 import load_pem_x509_certificate
 import base64
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
+
+def _get_master_passphrase():
+    """Get the master passphrase for encrypting/decrypting private keys."""
+    password = os.getenv("MASTER_KEY_PASSWORD", "")
+    if not password:
+        raise ValueError("MASTER_KEY_PASSWORD not set in .env")
+    return password.encode("utf-8")
 
 class DigitalCertificateAuth:
     def __init__(self):
@@ -37,12 +47,13 @@ class DigitalCertificateAuth:
         # Generate public key
         public_key = private_key.public_key()
         
-        # Save private key
+        # Save private key (encrypted with master passphrase)
+        passphrase = _get_master_passphrase()
         with open(private_key_path, "wb") as f:
             f.write(private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption()
+                encryption_algorithm=serialization.BestAvailableEncryption(passphrase)
             ))
         
         # Save public key
@@ -70,9 +81,21 @@ class DigitalCertificateAuth:
             # Generate keys if they don't exist
             self.generate_institute_keys(institute_email)
         
-        # Load private key
+        # Load private key (try encrypted first, fall back to unencrypted for legacy keys)
+        passphrase = _get_master_passphrase()
         with open(private_key_path, "rb") as f:
-            private_key = load_pem_private_key(f.read(), password=None)
+            key_data = f.read()
+        try:
+            private_key = load_pem_private_key(key_data, password=passphrase)
+        except (TypeError, ValueError):
+            # Legacy unencrypted key — load it and re-save encrypted
+            private_key = load_pem_private_key(key_data, password=None)
+            with open(private_key_path, "wb") as f:
+                f.write(private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.BestAvailableEncryption(passphrase)
+                ))
         
         # Create data to sign
         data_to_sign = json.dumps(certificate_data, sort_keys=True).encode('utf-8')
