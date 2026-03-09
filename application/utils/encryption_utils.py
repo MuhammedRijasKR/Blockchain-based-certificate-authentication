@@ -99,3 +99,20 @@ def get_encryption_key(certificate_id, user_email, user_role):
     else:
         # Verifiers and any other role: access denied
         return None
+
+
+def try_decrypt_with_all_keys(encrypted_bytes):
+    """
+    Try to decrypt encrypted bytes with all stored keys.
+    Used for verification of uploaded encrypted files.
+    Returns (decrypted_bytes, certificate_id) or (None, None).
+    """
+    store = _load_key_store()
+    for cert_id, entry in store.items():
+        try:
+            key = bytes.fromhex(entry["key"])
+            decrypted = decrypt_file(encrypted_bytes, key)
+            return decrypted, cert_id
+        except Exception:
+            continue
+    return None, None

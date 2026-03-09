@@ -6,7 +6,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 from connection import contract
 
 
-def generate_certificate(output_path, uid, candidate_name, course_name, org_name, institute_logo_path):
+def generate_certificate(output_path, uid, candidate_name, course_name, org_name, institute_logo_path, grade=""):
     # Create a PDF document
     doc = SimpleDocTemplate(output_path, pagesize=letter)
 
@@ -50,12 +50,14 @@ def generate_certificate(output_path, uid, candidate_name, course_name, org_name
         alignment=1
     )
 
+    grade_text = f"<br/><br/>Grade: <font color='green'> {grade} </font>" if grade else ""
+
     recipient_text = f"This is to certify that<br/><br/>\
                      <font color='red'> {candidate_name} </font><br/>\
                      with UID <br/> \
                     <font color='red'> {uid} </font> <br/><br/>\
                      has successfully completed the course:<br/>\
-                     <font color='blue'> {course_name} </font>"
+                     <font color='blue'> {course_name} </font>{grade_text}"
 
     recipient = Paragraph(recipient_text, recipient_style)
     elements.extend([recipient, Spacer(1, 12)])
@@ -77,15 +79,42 @@ def extract_certificate(pdf_path):
         org_name = lines[0]
         candidate_name = lines[3]
         uid = lines[5]
-        course_name = lines[-1]
 
-        return uid, candidate_name, course_name, org_name
+        # Check if grade is present (last line starts with "Grade:")
+        grade = ""
+        if lines[-1].startswith("Grade:"):
+            grade = lines[-1].replace("Grade:", "").strip()
+            course_name = lines[-2]
+        else:
+            course_name = lines[-1]
+
+        return uid, candidate_name, course_name, org_name, grade
 
 
 def get_certificate_id_ipfs_hash(ipfs_hash):
+    # First check individual certificates on-chain
     certificate_ids = contract.functions.getAllCertificateIds().call()
     for certificate_id in certificate_ids:
         certificate = contract.functions.getCertificate(certificate_id).call()
         if certificate[4] == ipfs_hash:
             return certificate_id
+
+    # Also check pending individual certificates
+    try:
+        pending_ids = contract.functions.getAllPendingCertificateIds().call()
+        for certificate_id in pending_ids:
+            certificate = contract.functions.getCertificate(certificate_id).call()
+            if certificate[4] == ipfs_hash:
+                return certificate_id
+    except:
+        pass
+
+    # Check Merkle proof store for batch certificates
+    from utils.merkle_utils import _load_store
+    store = _load_store()
+    for batch_id, batch_data in store.items():
+        for cert_id, cert in batch_data["certificates"].items():
+            if cert.get("ipfs_hash") == ipfs_hash:
+                return cert_id
+
     return None

@@ -1,11 +1,15 @@
 import json
 import os
+import time
 
 import requests
 import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
+
+PINATA_TIMEOUT = 60  # seconds
+MAX_RETRIES = 3
 api_key = os.getenv("PINATA_API_KEY")
 api_secret = os.getenv("PINATA_API_SECRET")
 
@@ -24,15 +28,23 @@ def upload_to_pinata(file_path, user_email):
         }
     }
 
-    with open(file_path, "rb") as file:
-        files = {"file": (file.name, file), "pinataMetadata": (None, json.dumps(metadata), "application/json")}
-        response = requests.post(pinata_api_url, headers=headers, files=files)
-        result = response.json()
+    for attempt in range(MAX_RETRIES):
+        try:
+            with open(file_path, "rb") as file:
+                files = {"file": (file.name, file), "pinataMetadata": (None, json.dumps(metadata), "application/json")}
+                response = requests.post(pinata_api_url, headers=headers, files=files, timeout=PINATA_TIMEOUT)
+                result = response.json()
 
-        if "IpfsHash" in result:
-            return result["IpfsHash"]
-        else:
-            st.error("Failed to upload to Pinata.")
+                if "IpfsHash" in result:
+                    return result["IpfsHash"]
+                else:
+                    st.error("Failed to upload to Pinata.")
+                    return None
+        except requests.exceptions.Timeout:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)  # exponential backoff
+                continue
+            st.error("Upload to Pinata timed out after multiple retries.")
             return None
 
 
@@ -52,16 +64,24 @@ def upload_bytes_to_pinata(data_bytes, filename, user_email):
     }
 
     from io import BytesIO
-    file_obj = BytesIO(data_bytes)
-    files = {"file": (filename, file_obj), "pinataMetadata": (None, json.dumps(metadata), "application/json")}
-    response = requests.post(pinata_api_url, headers=headers, files=files)
-    result = response.json()
+    for attempt in range(MAX_RETRIES):
+        try:
+            file_obj = BytesIO(data_bytes)
+            files = {"file": (filename, file_obj), "pinataMetadata": (None, json.dumps(metadata), "application/json")}
+            response = requests.post(pinata_api_url, headers=headers, files=files, timeout=PINATA_TIMEOUT)
+            result = response.json()
 
-    if "IpfsHash" in result:
-        return result["IpfsHash"]
-    else:
-        st.error("Failed to upload encrypted file to Pinata.")
-        return None
+            if "IpfsHash" in result:
+                return result["IpfsHash"]
+            else:
+                st.error("Failed to upload encrypted file to Pinata.")
+                return None
+        except requests.exceptions.Timeout:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)
+                continue
+            st.error("Upload to Pinata timed out after multiple retries.")
+            return None
 
 
 def get_pinata_files(user_email):
@@ -74,7 +94,7 @@ def get_pinata_files(user_email):
         "status": "pinned",
         "pageLimit": 100  # Adjust as needed
     }
-    response = requests.get(url, headers=headers, params=params)
+    response = requests.get(url, headers=headers, params=params, timeout=PINATA_TIMEOUT)
     if response.status_code == 200:
         files = response.json().get("rows", [])
         if files:
@@ -93,7 +113,7 @@ def delete_pinata_file(ipfs_hash):
         "pinata_api_key": api_key,
         "pinata_secret_api_key": api_secret
     }
-    response = requests.delete(url, headers=headers)
+    response = requests.delete(url, headers=headers, timeout=PINATA_TIMEOUT)
     return response.status_code == 200
 
 
@@ -107,7 +127,7 @@ def get_metadata_from_pinata(ipfs_hash):
         "hashContains": ipfs_hash
     }
 
-    response = requests.get(url, headers=headers, params=params)
+    response = requests.get(url, headers=headers, params=params, timeout=PINATA_TIMEOUT)
 
     if response.status_code == 200:
         data = response.json()

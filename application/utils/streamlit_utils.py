@@ -24,12 +24,33 @@ def displayPDF(file):
 
 
 def view_certificate(certificate_id, user_email=None, user_role=None):
-    # Smart Contract Call
-    result = contract.functions.getCertificate(certificate_id).call()
-    ipfs_hash = result[4]
-    metadata = get_metadata_from_pinata(ipfs_hash)
-    if user_email is not None and user_role == "institute" and metadata and metadata.get("keyvalues", {}).get("user_email") != str(user_email):
-        raise Exception("User email does not match")
+    ipfs_hash = None
+    is_batch_cert = False
+
+    # Try individual certificate first
+    try:
+        result = contract.functions.getCertificate(certificate_id).call()
+        ipfs_hash = result[4]
+    except Exception:
+        pass
+
+    # Fall back to batch certificate lookup
+    if not ipfs_hash:
+        from utils.merkle_utils import find_certificate_batch
+        batch_id, batch_cert_data = find_certificate_batch(certificate_id)
+        if batch_id is not None and batch_cert_data:
+            ipfs_hash = batch_cert_data.get("ipfs_hash", "")
+            is_batch_cert = True
+
+    if not ipfs_hash:
+        st.error("❌ Certificate not found on blockchain or in any batch.")
+        return
+
+    # Access control for institute users
+    if not is_batch_cert:
+        metadata = get_metadata_from_pinata(ipfs_hash)
+        if user_email is not None and user_role == "institute" and metadata and metadata.get("keyvalues", {}).get("user_email") != str(user_email):
+            raise Exception("User email does not match")
 
     # Get encryption key with access control
     if user_role is None:
