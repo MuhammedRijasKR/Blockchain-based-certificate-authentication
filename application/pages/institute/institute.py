@@ -13,6 +13,7 @@ from utils.streamlit_utils import view_certificate, get_next_uid, uid_created
 from utils.crypto_utils import DigitalCertificateAuth
 from utils.encryption_utils import generate_key, encrypt_file, save_encryption_key, get_encryption_key, decrypt_file
 from utils.merkle_utils import compute_leaf, build_merkle_tree, save_batch_proofs
+from utils.bloom_filter import bloom_add
 
 hide_sidebar()
 auth = AuthManager()
@@ -395,6 +396,9 @@ elif selected == "Generate Certificate":
                         # Save encryption key with access control
                         save_encryption_key(certificate_id, encryption_key, st.session_state.user_email)
 
+                        # Add to Bloom Filter for fast verification lookups
+                        bloom_add(certificate_id)
+
                         st.success(f"✅ Certificate proposed with digital signature and encryption!")
                         st.success(f"Certificate ID: `{certificate_id}`")
                         st.info("⏳ Certificate is pending admin approval. It will be active once approved.")
@@ -556,6 +560,10 @@ elif selected == "Bulk Generate":
 
                         # Save proofs locally
                         save_batch_proofs(batch_id, certificates, tree_layers, merkle_root)
+
+                        # Add all batch certificates to Bloom Filter
+                        for cert in certificates:
+                            bloom_add(cert["certificate_id"])
 
                         progress_bar.progress(1.0)
                         status_text.text("")

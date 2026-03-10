@@ -3,6 +3,7 @@ from connection import contract, w3
 from utils.auth import AuthManager
 from utils.streamlit_utils import hide_sidebar
 from utils.pinata_utils import delete_pinata_file
+from utils.bloom_filter import bloom_rebuild, bloom_stats
 from datetime import datetime
 
 hide_sidebar()
@@ -495,6 +496,32 @@ with tab6:
         
         st.markdown("### 🔗 Smart Contract Info")
         st.code(f"Contract Address: {contract.address}", language="text")
+
+        # --- Bloom Filter Management ---
+        st.markdown("### 🌸 Bloom Filter")
+        stats = bloom_stats()
+        bcol1, bcol2, bcol3 = st.columns(3)
+        bcol1.metric("Items", stats["items_inserted"])
+        bcol2.metric("Fill Ratio", f"{stats['fill_ratio']*100:.1f}%")
+        bcol3.metric("FP Rate", f"{stats['false_positive_rate']*100:.4f}%")
+
+        if st.button("🔄 Rebuild Bloom Filter from Blockchain"):
+            all_ids = list(certificate_ids) + list(pending_cert_ids)
+            # Also include batch certificate IDs from local proofs
+            import os, json as _json
+            batch_dir = os.path.join(os.path.dirname(__file__), "..", "..", "batch_proofs")
+            if os.path.isdir(batch_dir):
+                for fname in os.listdir(batch_dir):
+                    if fname.endswith(".json"):
+                        with open(os.path.join(batch_dir, fname)) as f:
+                            bp = _json.load(f)
+                        for c in bp.get("certificates", []):
+                            cid = c.get("certificate_id")
+                            if cid:
+                                all_ids.append(cid)
+            result = bloom_rebuild(all_ids)
+            st.success(f"✅ Bloom Filter rebuilt with {result['items_inserted']} certificate IDs.")
+            st.rerun()
         
     except Exception as e:
         st.error(f"❌ Error loading statistics: {str(e)}")

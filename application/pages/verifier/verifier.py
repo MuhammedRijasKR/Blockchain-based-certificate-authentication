@@ -10,6 +10,7 @@ from utils.streamlit_utils import hide_sidebar
 from utils.crypto_utils import DigitalCertificateAuth
 from utils.merkle_utils import find_certificate_batch, verify_merkle_proof, compute_leaf
 from utils.encryption_utils import try_decrypt_with_all_keys
+from utils.bloom_filter import bloom_check
 
 hide_sidebar()
 auth = AuthManager()
@@ -272,6 +273,11 @@ elif selected == options[1]:
         if not certificate_id.strip():
             st.warning("Please enter a certificate ID.")
         else:
+            # Bloom Filter pre-check — fast O(1) membership test
+            if not bloom_check(certificate_id.strip()):
+                st.error("❌ Certificate not found. (Bloom Filter: definite negative)")
+                st.stop()
+
             # First check if it's a batch certificate
             batch_id, batch_cert_data = find_certificate_batch(certificate_id)
             if batch_id is not None:
