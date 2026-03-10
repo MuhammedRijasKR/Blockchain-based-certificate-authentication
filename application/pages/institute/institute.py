@@ -14,6 +14,7 @@ from utils.crypto_utils import DigitalCertificateAuth
 from utils.encryption_utils import generate_key, encrypt_file, save_encryption_key, get_encryption_key, decrypt_file
 from utils.merkle_utils import compute_leaf, build_merkle_tree, save_batch_proofs
 from utils.bloom_filter import bloom_add
+from utils.rejection_remarks import get_rejection, get_rejections_for_institute, remove_rejection
 
 hide_sidebar()
 auth = AuthManager()
@@ -63,7 +64,14 @@ else:
         "Institute Registration"
     ]
 
-selected = st.selectbox("Select an option", options, label_visibility="collapsed")
+# If redirected from reapply, force selectbox to "Generate Certificate"
+if st.session_state.get("selected_page") in options:
+    st.session_state["institute_nav"] = st.session_state.pop("selected_page")
+
+selected = st.selectbox(
+    "Select an option", options, label_visibility="collapsed",
+    key="institute_nav"
+)
 
 # --- Institute Registration ---
 if selected == "Institute Registration":
@@ -310,14 +318,50 @@ elif selected == "List Of Certificate":
                         )
                         st.markdown(f"[📥 Download Encrypted File]({link})")
                 else:
-                    col3.markdown("_Not on blockchain_")
-                    if col4.button("Delete from IPFS", key=ipfs_hash):
-                        if delete_pinata_file(ipfs_hash):
-                            st.success("✅ File deleted from IPFS!")
-                            files.clear()
-                            st.rerun()
-                        else:
-                            st.error("Failed to delete file from Pinata.")
+                    # Check if this cert was rejected by admin (search by ipfs_hash)
+                    rejection_info = None
+                    rejections = get_rejections_for_institute(st.session_state.user_email)
+                    for rid, rinfo in rejections.items():
+                        if rinfo.get("cert_info", {}).get("ipfs_hash") == ipfs_hash:
+                            rejection_info = rinfo
+                            rejection_cert_id = rid
+                            break
+
+                    if rejection_info:
+                        col3.markdown("❌ **Rejected**")
+                        col4.markdown("")
+                        with st.container():
+                            st.error(f"**Admin Remarks:** {rejection_info['remarks']}")
+                            ci = rejection_info.get("cert_info", {})
+                            st.markdown(
+                                f"**Original Details** — Name: {ci.get('candidate_name', '')}, "
+                                f"Course: {ci.get('course_name', '')}, Org: {ci.get('org_name', '')}, "
+                                f"Grade: {ci.get('grade', '')}"
+                            )
+                            st.caption(f"Rejected on: {rejection_info.get('rejected_at', '')[:19]}")
+
+                            reapply_col1, reapply_col2 = st.columns(2)
+                            with reapply_col1:
+                                if st.button("🔄 Reapply with Edits", key=f"reapply_{ipfs_hash}", type="primary"):
+                                    st.session_state["reapply_data"] = ci
+                                    st.session_state["reapply_cert_id"] = rejection_cert_id
+                                    st.session_state["selected_page"] = "Generate Certificate"
+                                    st.rerun()
+                            with reapply_col2:
+                                if st.button("🗑️ Dismiss & Delete", key=f"dismiss_{ipfs_hash}"):
+                                    remove_rejection(rejection_cert_id)
+                                    delete_pinata_file(ipfs_hash)
+                                    st.success("✅ Rejected certificate dismissed and cleaned up.")
+                                    st.rerun()
+                    else:
+                        col3.markdown("_Not on blockchain_")
+                        if col4.button("Delete from IPFS", key=ipfs_hash):
+                            if delete_pinata_file(ipfs_hash):
+                                st.success("✅ File deleted from IPFS!")
+                                files.clear()
+                                st.rerun()
+                            else:
+                                st.error("Failed to delete file from Pinata.")
                 st.markdown("---")
                 count += 1
 
@@ -325,13 +369,19 @@ elif selected == "List Of Certificate":
 elif selected == "Generate Certificate":
     next_uid = get_next_uid()
 
+    # Pre-fill from reapply data if available (keep in session until successful submit)
+    reapply = st.session_state.get("reapply_data", None)
+    reapply_cert_id = st.session_state.get("reapply_cert_id", None)
+    if reapply:
+        st.info("📝 **Reapplying a rejected certificate.** Edit the details below and resubmit.")
+
     with st.form("Generate-Certificate"):
         st.markdown("#### Fill the details to generate certificate")
         uid = st.text_input(label="UID", value=next_uid, disabled=True)
-        candidate_name = st.text_input(label="Candidate Name")
-        course_name = st.text_input(label="Course Name")
-        org_name = st.text_input(label="Issuing Organization")
-        grade = st.text_input(label="Grade", placeholder="e.g., A+, B, First Class")
+        candidate_name = st.text_input(label="Candidate Name", value=reapply.get("candidate_name", "") if reapply else "")
+        course_name = st.text_input(label="Course Name", value=reapply.get("course_name", "") if reapply else "")
+        org_name = st.text_input(label="Issuing Organization", value=reapply.get("org_name", "") if reapply else "")
+        grade = st.text_input(label="Grade", placeholder="e.g., A+, B, First Class", value=reapply.get("grade", "") if reapply else "")
 
         submit = st.form_submit_button("Generate")
 
@@ -398,6 +448,15 @@ elif selected == "Generate Certificate":
 
                         # Add to Bloom Filter for fast verification lookups
                         bloom_add(certificate_id)
+
+                        # Clean up old rejection record if this is a reapply
+                        if reapply_cert_id:
+                            remove_rejection(reapply_cert_id)
+                            old_ipfs = reapply.get("ipfs_hash") if reapply else None
+                            if old_ipfs:
+                                delete_pinata_file(old_ipfs)
+                            st.session_state.pop("reapply_data", None)
+                            st.session_state.pop("reapply_cert_id", None)
 
                         st.success(f"✅ Certificate proposed with digital signature and encryption!")
                         st.success(f"Certificate ID: `{certificate_id}`")

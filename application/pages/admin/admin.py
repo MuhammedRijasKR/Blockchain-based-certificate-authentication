@@ -4,6 +4,7 @@ from utils.auth import AuthManager
 from utils.streamlit_utils import hide_sidebar
 from utils.pinata_utils import delete_pinata_file
 from utils.bloom_filter import bloom_rebuild, bloom_stats
+from utils.rejection_remarks import save_rejection
 from datetime import datetime
 
 hide_sidebar()
@@ -155,12 +156,41 @@ with tab2:
                                     st.error(f"❌ Approval failed: {str(e)}")
                         with col_btn2:
                             if st.button("❌ Reject", key=f"reject_cert_{idx}", type="secondary", use_container_width=True):
-                                try:
-                                    contract.functions.rejectCertificate(cert_id).transact({'from': w3.eth.accounts[0]})
-                                    st.success("✅ Certificate rejected.")
+                                st.session_state[f"show_reject_form_{idx}"] = True
+
+                        # Show rejection remarks form when reject button is clicked
+                        if st.session_state.get(f"show_reject_form_{idx}", False):
+                            remarks = st.text_area(
+                                "📝 Rejection Remarks (required)",
+                                placeholder="Explain why this certificate is being rejected so the institute can correct and reapply...",
+                                key=f"reject_remarks_{idx}"
+                            )
+                            r_col1, r_col2 = st.columns(2)
+                            with r_col1:
+                                if st.button("✅ Confirm Rejection", key=f"confirm_reject_{idx}", type="primary", use_container_width=True):
+                                    if not remarks or not remarks.strip():
+                                        st.warning("Please enter rejection remarks.")
+                                    else:
+                                        try:
+                                            cert_info = {
+                                                "uid": cert_data[0],
+                                                "candidate_name": cert_data[1],
+                                                "course_name": cert_data[2],
+                                                "org_name": cert_data[3],
+                                                "ipfs_hash": cert_data[4],
+                                                "institute_email": cert_data[5],
+                                                "grade": cert_data[8],
+                                            }
+                                            save_rejection(cert_id, remarks.strip(), st.session_state.user_email, cert_info)
+                                            contract.functions.rejectCertificate(cert_id).transact({'from': w3.eth.accounts[0]})
+                                            st.success("✅ Certificate rejected with remarks.")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"❌ Rejection failed: {str(e)}")
+                            with r_col2:
+                                if st.button("Cancel", key=f"cancel_reject_{idx}", use_container_width=True):
+                                    st.session_state[f"show_reject_form_{idx}"] = False
                                     st.rerun()
-                                except Exception as e:
-                                    st.error(f"❌ Rejection failed: {str(e)}")
                         
                         st.markdown("---")
                         
