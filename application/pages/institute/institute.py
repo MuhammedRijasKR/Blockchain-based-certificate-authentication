@@ -13,8 +13,9 @@ from utils.streamlit_utils import view_certificate, get_next_uid, uid_created
 from utils.crypto_utils import DigitalCertificateAuth
 from utils.encryption_utils import generate_key, encrypt_file, save_encryption_key, get_encryption_key, decrypt_file
 from utils.merkle_utils import compute_leaf, build_merkle_tree, save_batch_proofs
+from utils.merkle_utils import find_certificate_batch, _load_store as load_merkle_store
 from utils.bloom_filter import bloom_add
-from utils.rejection_remarks import get_rejection, get_rejections_for_institute, remove_rejection
+from utils.rejection_remarks import get_rejection, get_rejections_for_institute, remove_rejection, get_batch_rejection, get_batch_rejections_for_institute
 
 hide_sidebar()
 auth = AuthManager()
@@ -228,38 +229,93 @@ elif selected == "List Of Certificate":
     if not files:
         st.info("No files found.")
     else:
-        count = 1
+        # --- Pre-process: classify files into individual certs and batch groups ---
+        merkle_store = load_merkle_store()
+        individual_files = []       # (file, certificate_id)
+        batch_groups = {}           # batch_id -> list of (file, certificate_id, cert_meta)
+        unknown_files = []          # files not on blockchain at all
+
         for f in files:
-            name = f['metadata'].get('name', 'Unnamed')
             ipfs_hash = f['ipfs_pin_hash']
-            link = f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
             certificate_id = get_certificate_id_ipfs_hash(ipfs_hash)
 
-            with st.container():
-                col1, col2, col3, col4, col5 = st.columns([1, 3, 4, 2, 2])
-                col1.markdown(f"**{count}**")
-                col2.markdown(f"**{name}**")
+            if not certificate_id:
+                unknown_files.append(f)
+                continue
 
-                if certificate_id:
+            # Check if this cert belongs to a batch
+            found_batch = None
+            for bid, bdata in merkle_store.items():
+                if certificate_id in bdata.get("certificates", {}):
+                    found_batch = bid
+                    break
+
+            if found_batch is not None:
+                if found_batch not in batch_groups:
+                    batch_groups[found_batch] = []
+                batch_groups[found_batch].append((f, certificate_id, merkle_store[found_batch]["certificates"][certificate_id]))
+            else:
+                individual_files.append((f, certificate_id))
+
+        count = 1
+
+        # ===== INDIVIDUAL CERTIFICATES =====
+        if individual_files:
+            st.markdown("### 📜 Individual Certificates")
+            for f, certificate_id in individual_files:
+                name = f['metadata'].get('name', 'Unnamed')
+                ipfs_hash = f['ipfs_pin_hash']
+                link = f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
+
+                with st.container():
+                    col1, col2, col3, col4, col5 = st.columns([1, 3, 4, 2, 2])
+                    col1.markdown(f"**{count}**")
+                    col2.markdown(f"**{name}**")
                     col3.markdown(f"`{certificate_id[:24]}...`")
 
-                    # Determine if this cert is approved
+                    # Determine approval status
                     is_approved = False
-                    is_batch_cert = False
                     try:
-                        from utils.merkle_utils import find_certificate_batch
-                        batch_id, batch_cert_data = find_certificate_batch(certificate_id)
-                        if batch_id is not None:
-                            is_batch_cert = True
-                            batch_data = contract.functions.getBatch(int(batch_id)).call()
-                            is_approved = batch_data[3]
-                        else:
-                            is_approved = contract.functions.isCertificateApproved(certificate_id).call()
+                        is_approved = contract.functions.isCertificateApproved(certificate_id).call()
                     except:
                         is_approved = False
 
                     if not is_approved:
-                        col4.markdown("⏳ **Pending**")
+                        # Check if rejected
+                        rejection_info = None
+                        rejections = get_rejections_for_institute(st.session_state.user_email)
+                        for rid, rinfo in rejections.items():
+                            if rinfo.get("cert_info", {}).get("ipfs_hash") == ipfs_hash:
+                                rejection_info = rinfo
+                                rejection_cert_id = rid
+                                break
+
+                        if rejection_info:
+                            col4.markdown("❌ **Rejected**")
+                            with st.container():
+                                st.error(f"**Admin Remarks:** {rejection_info['remarks']}")
+                                ci = rejection_info.get("cert_info", {})
+                                st.markdown(
+                                    f"**Original Details** — Name: {ci.get('candidate_name', '')}, "
+                                    f"Course: {ci.get('course_name', '')}, Org: {ci.get('org_name', '')}, "
+                                    f"Grade: {ci.get('grade', '')}"
+                                )
+                                st.caption(f"Rejected on: {rejection_info.get('rejected_at', '')[:19]}")
+                                reapply_col1, reapply_col2 = st.columns(2)
+                                with reapply_col1:
+                                    if st.button("🔄 Reapply with Edits", key=f"reapply_{ipfs_hash}", type="primary"):
+                                        st.session_state["reapply_data"] = ci
+                                        st.session_state["reapply_cert_id"] = rejection_cert_id
+                                        st.session_state["selected_page"] = "Generate Certificate"
+                                        st.rerun()
+                                with reapply_col2:
+                                    if st.button("🗑️ Dismiss & Delete", key=f"dismiss_{ipfs_hash}"):
+                                        remove_rejection(rejection_cert_id)
+                                        delete_pinata_file(ipfs_hash)
+                                        st.success("✅ Rejected certificate dismissed and cleaned up.")
+                                        st.rerun()
+                        else:
+                            col4.markdown("⏳ **Pending**")
                     else:
                         try:
                             is_revoked = contract.functions.isRevoked(certificate_id).call()
@@ -275,15 +331,9 @@ elif selected == "List Of Certificate":
                         else:
                             if col4.button("Revoke", key=f"rev_{ipfs_hash}"):
                                 try:
-                                    if is_batch_cert:
-                                        contract.functions.proposeRevocationBatchCert(
-                                            certificate_id,
-                                            st.session_state.user_email
-                                        ).transact({'from': w3.eth.accounts[0]})
-                                    else:
-                                        contract.functions.proposeRevocation(
-                                            certificate_id
-                                        ).transact({'from': w3.eth.accounts[0]})
+                                    contract.functions.proposeRevocation(
+                                        certificate_id
+                                    ).transact({'from': w3.eth.accounts[0]})
                                     st.success("✅ Revocation request submitted!")
                                     st.rerun()
                                 except Exception as e:
@@ -317,19 +367,144 @@ elif selected == "List Of Certificate":
                             key=f"dl_btn_{ipfs_hash}"
                         )
                         st.markdown(f"[📥 Download Encrypted File]({link})")
-                else:
-                    # Check if this cert was rejected by admin (search by ipfs_hash)
-                    rejection_info = None
-                    rejections = get_rejections_for_institute(st.session_state.user_email)
-                    for rid, rinfo in rejections.items():
-                        if rinfo.get("cert_info", {}).get("ipfs_hash") == ipfs_hash:
-                            rejection_info = rinfo
-                            rejection_cert_id = rid
-                            break
+
+                    st.markdown("---")
+                    count += 1
+
+        # ===== BATCH CERTIFICATES =====
+        if batch_groups:
+            st.markdown("### 📦 Batch Certificates")
+            for batch_id, batch_certs in batch_groups.items():
+                # Determine batch status
+                batch_status = "unknown"
+                batch_is_approved = False
+                batch_rejection_info = None
+                try:
+                    batch_data = contract.functions.getBatch(int(batch_id)).call()
+                    if batch_data[2] == 0 and batch_data[4] == 0:
+                        batch_rejection_info = get_batch_rejection(batch_id)
+                        batch_status = "rejected"
+                    elif batch_data[3]:
+                        batch_status = "approved"
+                        batch_is_approved = True
+                    else:
+                        batch_status = "pending"
+                except:
+                    batch_rejection_info = get_batch_rejection(batch_id)
+                    batch_status = "rejected" if batch_rejection_info else "unknown"
+
+                # Batch header
+                status_icon = {"approved": "✅", "pending": "⏳", "rejected": "❌", "unknown": "❓"}
+                status_label = {"approved": "Approved", "pending": "Pending", "rejected": "Rejected", "unknown": "Unknown"}
+
+                with st.expander(
+                    f"📦 Batch #{batch_id} — {len(batch_certs)} certificate(s) — {status_icon.get(batch_status, '')} {status_label.get(batch_status, '')}",
+                    expanded=False
+                ):
+                    # Show rejection remarks if batch was rejected
+                    if batch_status == "rejected" and batch_rejection_info:
+                        st.error(f"**Admin Remarks:** {batch_rejection_info['remarks']}")
+                        st.caption(f"Rejected on: {batch_rejection_info.get('rejected_at', '')[:19]}")
+
+                    # Table of certificates in this batch
+                    for cert_idx, (f, certificate_id, cert_meta) in enumerate(batch_certs):
+                        name = f['metadata'].get('name', 'Unnamed')
+                        ipfs_hash = f['ipfs_pin_hash']
+                        link = f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
+                        cand_name = cert_meta.get("candidate_name", "")
+                        course = cert_meta.get("course_name", "")
+                        grade_val = cert_meta.get("grade", "")
+
+                        c1, c2, c3, c4, c5 = st.columns([1, 3, 3, 2, 2])
+                        c1.markdown(f"**{cert_idx + 1}**")
+                        c2.markdown(f"**{cand_name}**")
+                        c3.markdown(f"{course} {'(' + grade_val + ')' if grade_val else ''}")
+
+                        # Per-cert status within the batch
+                        if batch_status == "rejected":
+                            c4.markdown("❌ Rejected")
+                        elif batch_status == "pending":
+                            c4.markdown("⏳ Pending")
+                        elif batch_status == "approved":
+                            try:
+                                is_revoked = contract.functions.isRevoked(certificate_id).call()
+                                is_pending_rev = contract.functions.isPendingRevocation(certificate_id).call()
+                            except:
+                                is_revoked = False
+                                is_pending_rev = False
+
+                            if is_revoked:
+                                c4.markdown("🚫 Revoked")
+                            elif is_pending_rev:
+                                c4.markdown("⏳ Rev. Pending")
+                            else:
+                                if c4.button("Revoke", key=f"rev_batch_{batch_id}_{cert_idx}"):
+                                    try:
+                                        contract.functions.proposeRevocationBatchCert(
+                                            certificate_id,
+                                            st.session_state.user_email
+                                        ).transact({'from': w3.eth.accounts[0]})
+                                        st.success("✅ Revocation request submitted!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Failed: {str(e)}")
+
+                        # Download
+                        dl_key = f"dl_pdf_{ipfs_hash}"
+                        if c5.button("📥 Get PDF", key=f"get_batch_{batch_id}_{cert_idx}"):
+                            try:
+                                import requests
+                                enc_key = get_encryption_key(certificate_id, st.session_state.user_email, "institute")
+                                if enc_key:
+                                    resp = requests.get(link, timeout=60)
+                                    if resp.status_code == 200:
+                                        pdf_bytes = decrypt_file(resp.content, enc_key)
+                                        st.session_state[dl_key] = pdf_bytes
+                                    else:
+                                        st.warning("Could not fetch from IPFS.")
+                                else:
+                                    st.warning("No encryption key found.")
+                            except Exception as e:
+                                st.error(f"Download failed: {str(e)}")
+
+                        if dl_key in st.session_state:
+                            pdf_name = name.replace('.enc', '.pdf') if name.endswith('.enc') else name
+                            st.download_button(
+                                "💾 Download PDF",
+                                st.session_state[dl_key],
+                                file_name=pdf_name,
+                                mime="application/pdf",
+                                key=f"dl_btn_batch_{batch_id}_{cert_idx}"
+                            )
+                            st.markdown(f"[📥 Download Encrypted File]({link})")
+
+                        st.markdown("---")
+
+                count += 1
+
+        # ===== UNKNOWN FILES (not on blockchain) =====
+        if unknown_files:
+            st.markdown("### ❓ Unlinked Files")
+            for f in unknown_files:
+                name = f['metadata'].get('name', 'Unnamed')
+                ipfs_hash = f['ipfs_pin_hash']
+
+                # Check if this was a rejected individual cert
+                rejection_info = None
+                rejections = get_rejections_for_institute(st.session_state.user_email)
+                for rid, rinfo in rejections.items():
+                    if rinfo.get("cert_info", {}).get("ipfs_hash") == ipfs_hash:
+                        rejection_info = rinfo
+                        rejection_cert_id = rid
+                        break
+
+                with st.container():
+                    col1, col2, col3, col4 = st.columns([1, 3, 4, 2])
+                    col1.markdown(f"**{count}**")
+                    col2.markdown(f"**{name}**")
 
                     if rejection_info:
                         col3.markdown("❌ **Rejected**")
-                        col4.markdown("")
                         with st.container():
                             st.error(f"**Admin Remarks:** {rejection_info['remarks']}")
                             ci = rejection_info.get("cert_info", {})
@@ -339,7 +514,6 @@ elif selected == "List Of Certificate":
                                 f"Grade: {ci.get('grade', '')}"
                             )
                             st.caption(f"Rejected on: {rejection_info.get('rejected_at', '')[:19]}")
-
                             reapply_col1, reapply_col2 = st.columns(2)
                             with reapply_col1:
                                 if st.button("🔄 Reapply with Edits", key=f"reapply_{ipfs_hash}", type="primary"):
@@ -358,12 +532,12 @@ elif selected == "List Of Certificate":
                         if col4.button("Delete from IPFS", key=ipfs_hash):
                             if delete_pinata_file(ipfs_hash):
                                 st.success("✅ File deleted from IPFS!")
-                                files.clear()
                                 st.rerun()
                             else:
                                 st.error("Failed to delete file from Pinata.")
-                st.markdown("---")
-                count += 1
+
+                    st.markdown("---")
+                    count += 1
 
 # --- Certificate Generation ---
 elif selected == "Generate Certificate":

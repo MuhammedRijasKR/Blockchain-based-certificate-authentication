@@ -4,7 +4,7 @@ from utils.auth import AuthManager
 from utils.streamlit_utils import hide_sidebar
 from utils.pinata_utils import delete_pinata_file
 from utils.bloom_filter import bloom_rebuild, bloom_stats
-from utils.rejection_remarks import save_rejection
+from utils.rejection_remarks import save_rejection, save_batch_rejection
 from datetime import datetime
 
 hide_sidebar()
@@ -256,12 +256,36 @@ with tab3:
                                     st.error(f"❌ Approval failed: {str(e)}")
                         with col_btn2:
                             if st.button("❌ Reject Batch", key=f"reject_batch_{idx}", type="secondary", use_container_width=True):
-                                try:
-                                    contract.functions.rejectBatch(batch_id).transact({'from': w3.eth.accounts[0]})
-                                    st.success("✅ Batch rejected.")
+                                st.session_state[f"show_reject_batch_form_{idx}"] = True
+
+                        # Show rejection remarks form when reject button is clicked
+                        if st.session_state.get(f"show_reject_batch_form_{idx}", False):
+                            batch_remarks = st.text_area(
+                                "📝 Rejection Remarks (required)",
+                                placeholder="Explain why this batch is being rejected so the institute can correct and reapply...",
+                                key=f"reject_batch_remarks_{idx}"
+                            )
+                            rb_col1, rb_col2 = st.columns(2)
+                            with rb_col1:
+                                if st.button("✅ Confirm Rejection", key=f"confirm_reject_batch_{idx}", type="primary", use_container_width=True):
+                                    if not batch_remarks or not batch_remarks.strip():
+                                        st.warning("Please enter rejection remarks.")
+                                    else:
+                                        try:
+                                            save_batch_rejection(
+                                                batch_id, batch_remarks.strip(),
+                                                st.session_state.user_email,
+                                                batch_data[1], batch_data[2]
+                                            )
+                                            contract.functions.rejectBatch(batch_id).transact({'from': w3.eth.accounts[0]})
+                                            st.success("✅ Batch rejected with remarks.")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"❌ Rejection failed: {str(e)}")
+                            with rb_col2:
+                                if st.button("Cancel", key=f"cancel_reject_batch_{idx}", use_container_width=True):
+                                    st.session_state[f"show_reject_batch_form_{idx}"] = False
                                     st.rerun()
-                                except Exception as e:
-                                    st.error(f"❌ Rejection failed: {str(e)}")
                         
                         st.markdown("---")
                         
