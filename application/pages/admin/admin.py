@@ -3,6 +3,7 @@ from connection import contract, w3
 from utils.auth import AuthManager
 from utils.streamlit_utils import hide_sidebar
 from utils.pinata_utils import delete_pinata_file
+from utils.face_utils import clear_face_profile
 from utils.bloom_filter import bloom_rebuild, bloom_stats
 from utils.rejection_remarks import save_rejection, save_batch_rejection
 from datetime import datetime
@@ -183,6 +184,7 @@ with tab2:
                                             }
                                             save_rejection(cert_id, remarks.strip(), st.session_state.user_email, cert_info)
                                             contract.functions.rejectCertificate(cert_id).transact({'from': w3.eth.accounts[0]})
+                                            clear_face_profile(cert_id)
                                             st.success("✅ Certificate rejected with remarks.")
                                             st.rerun()
                                         except Exception as e:
@@ -278,6 +280,14 @@ with tab3:
                                                 batch_data[1], batch_data[2]
                                             )
                                             contract.functions.rejectBatch(batch_id).transact({'from': w3.eth.accounts[0]})
+                                            # Clean up any face profiles bound to certs in this batch
+                                            try:
+                                                from utils.merkle_utils import _load_store as _ms_load
+                                                _bdata = _ms_load().get(str(batch_id), {})
+                                                for _bcert_id in _bdata.get("certificates", {}).keys():
+                                                    clear_face_profile(_bcert_id)
+                                            except Exception:
+                                                pass
                                             st.success("✅ Batch rejected with remarks.")
                                             st.rerun()
                                         except Exception as e:
@@ -430,6 +440,8 @@ with tab4:
                                     # Also delete from IPFS
                                     if display_ipfs:
                                         delete_pinata_file(display_ipfs)
+                                    # Remove the bound face profile
+                                    clear_face_profile(cert_id)
                                     st.success("✅ Certificate revoked and removed from IPFS!")
                                     st.rerun()
                                 except Exception as e:

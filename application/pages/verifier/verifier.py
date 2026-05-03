@@ -8,6 +8,7 @@ from utils.cert_utils import extract_certificate
 from utils.auth import AuthManager
 from utils.streamlit_utils import hide_sidebar
 from utils.crypto_utils import DigitalCertificateAuth
+from utils.face_utils import get_face_profile, verify_face_match
 from utils.merkle_utils import find_certificate_batch, verify_merkle_proof, compute_leaf
 from utils.encryption_utils import try_decrypt_with_all_keys
 from utils.bloom_filter import bloom_check
@@ -70,6 +71,41 @@ def _show_verification_result(is_valid, is_revoked, candidate_name, org_name, co
         st.success("✅ Issuing institute is verified by the system")
     elif institute_name:
         st.warning("⚠️ Issuing institute is not yet verified")
+
+
+def _gate_owner_face(certificate_id, owner_name=""):
+    profile = get_face_profile(certificate_id)
+    if not profile:
+        st.warning(
+            "⚠️ This certificate has no biometric profile bound to it. "
+            "Identity-of-bearer cannot be verified — proceeding with cryptographic checks only."
+        )
+        return True
+
+    display_name = profile.get("owner_name") or owner_name or "the certificate owner"
+    st.markdown("### 🧑‍💼 Live Face ID Verification")
+    st.caption(
+        f"Capture a live photo of **{display_name}**. The image must match the face the issuing "
+        f"institute bound to this certificate."
+    )
+
+    live_face = st.camera_input(
+        "Capture the certificate owner's face",
+        key=f"verifier_face_{certificate_id}",
+    )
+    if live_face is None:
+        st.info("👆 Take a live photo to continue.")
+        return None
+
+    is_match, confidence, message = verify_face_match(certificate_id, live_face.getvalue())
+    if not is_match:
+        st.error(f"❌ {message}")
+        if confidence is not None:
+            st.caption("Tip: ensure good lighting, frontal pose, and a single face in frame.")
+        return False
+
+    st.success(f"✅ {message}")
+    return True
 
 
 def _verify_batch_certificate(batch_id, batch_cert_data, certificate_id, salt, uid, candidate_name, course_name, org_name, grade=""):
@@ -208,6 +244,10 @@ if selected == options[0]:
                 st.error("❌ Certificate not found on blockchain or in any batch.")
                 st.stop()
 
+            face_gate = _gate_owner_face(certificate_id, candidate_name)
+            if face_gate is not True:
+                st.stop()
+
             # Check if it's a batch certificate
             batch_id, batch_cert_data = find_certificate_batch(certificate_id)
             if batch_id is not None:
@@ -287,11 +327,17 @@ elif selected == options[1]:
                 course_name = batch_cert_data["course_name"]
                 org_name = batch_cert_data["org_name"]
                 grade = batch_cert_data.get("grade", "")
+                face_gate = _gate_owner_face(certificate_id, candidate_name)
+                if face_gate is not True:
+                    st.stop()
                 _verify_batch_certificate(batch_id, batch_cert_data, certificate_id, salt, uid, candidate_name, course_name, org_name, grade)
             else:
                 # Individual cert verification
                 try:
                     cert_data = contract.functions.getCertificate(certificate_id).call()
+                    face_gate = _gate_owner_face(certificate_id, cert_data[1])
+                    if face_gate is not True:
+                        st.stop()
                     is_revoked = contract.functions.isRevoked(certificate_id).call()
                     
                     institute_email = cert_data[5]

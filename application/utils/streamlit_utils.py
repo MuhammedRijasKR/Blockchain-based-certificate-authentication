@@ -52,11 +52,15 @@ def view_certificate(certificate_id, user_email=None, user_role=None):
         if user_email is not None and user_role == "institute" and metadata and metadata.get("keyvalues", {}).get("user_email") != str(user_email):
             raise Exception("User email does not match")
 
-    # Get encryption key with access control
+    # Resolve viewer identity
     if user_role is None:
         user_role = st.session_state.get("user_role", "verifier")
     if user_email is None:
         user_email = st.session_state.get("user_email", "")
+
+    # Note: face-ID gating is enforced in the verifier flow (see verifier.py).
+    # The institute/admin viewing their own certificate is gated by the
+    # encryption-key ABAC below — no live face capture is required here.
 
     encryption_key = get_encryption_key(certificate_id, user_email, user_role)
 
@@ -68,10 +72,22 @@ def view_certificate(certificate_id, user_email=None, user_role=None):
         # Decrypt the PDF
         try:
             decrypted_bytes = decrypt_file(response.content, encryption_key)
+            # Header banner with the certificate ID for copy/share.
+            st.markdown("##### 🆔 Certificate ID")
+            st.code(certificate_id, language=None)
+            if is_batch_cert:
+                st.caption("This certificate was issued as part of a Merkle batch.")
             with open("temp.pdf", 'wb') as pdf_file:
                 pdf_file.write(decrypted_bytes)
             displayPDF("temp.pdf")
             os.remove("temp.pdf")
+            st.download_button(
+                label="📥 Download Certificate PDF",
+                data=decrypted_bytes,
+                file_name=f"certificate_{certificate_id[:12]}.pdf",
+                mime="application/pdf",
+                key=f"view_cert_dl_{certificate_id}",
+            )
         except Exception as e:
             st.error(f"❌ Failed to decrypt certificate: {str(e)}")
     else:

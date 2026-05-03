@@ -6,5 +6,7 @@ reportlab
 requests
 streamlit
 streamlit_extras
+firebase-admin
 web3
 cryptography
+opencv-contrib-python-headless

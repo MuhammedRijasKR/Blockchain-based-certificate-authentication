@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from utils.auth import AuthManager
 from utils.cert_utils import generate_certificate, get_certificate_id_ipfs_hash
 from utils.pinata_utils import upload_to_pinata, upload_bytes_to_pinata, delete_pinata_file, get_pinata_files
+from utils.face_utils import save_face_samples, get_face_profile, enroll_face_for_cert, clear_face_profile, detect_face
 from utils.streamlit_utils import hide_sidebar
 from utils.streamlit_utils import view_certificate, get_next_uid, uid_created
 from utils.crypto_utils import DigitalCertificateAuth
@@ -51,6 +52,7 @@ Please wait for an admin to verify your institute.""")
 if is_registered and is_verified:
     options = [
         "Generate Certificate",
+        "Face ID Enrollment",
         "Bulk Generate",
         "List Of Certificate",
         "View Certificates"
@@ -271,7 +273,7 @@ elif selected == "List Of Certificate":
                     col1, col2, col3, col4, col5 = st.columns([1, 3, 4, 2, 2])
                     col1.markdown(f"**{count}**")
                     col2.markdown(f"**{name}**")
-                    col3.markdown(f"`{certificate_id[:24]}...`")
+                    col3.code(certificate_id, language=None)
 
                     # Determine approval status
                     is_approved = False
@@ -312,6 +314,7 @@ elif selected == "List Of Certificate":
                                     if st.button("🗑️ Dismiss & Delete", key=f"dismiss_{ipfs_hash}"):
                                         remove_rejection(rejection_cert_id)
                                         delete_pinata_file(ipfs_hash)
+                                        clear_face_profile(rejection_cert_id)
                                         st.success("✅ Rejected certificate dismissed and cleaned up.")
                                         st.rerun()
                         else:
@@ -478,6 +481,10 @@ elif selected == "List Of Certificate":
                             )
                             st.markdown(f"[📥 Download Encrypted File]({link})")
 
+                        # Full certificate ID for copy/paste into the Verify / View flows.
+                        st.caption("Certificate ID")
+                        st.code(certificate_id, language=None)
+
                         st.markdown("---")
 
                 count += 1
@@ -525,6 +532,7 @@ elif selected == "List Of Certificate":
                                 if st.button("🗑️ Dismiss & Delete", key=f"dismiss_{ipfs_hash}"):
                                     remove_rejection(rejection_cert_id)
                                     delete_pinata_file(ipfs_hash)
+                                    clear_face_profile(rejection_cert_id)
                                     st.success("✅ Rejected certificate dismissed and cleaned up.")
                                     st.rerun()
                     else:
@@ -557,12 +565,44 @@ elif selected == "Generate Certificate":
         org_name = st.text_input(label="Issuing Organization", value=reapply.get("org_name", "") if reapply else "")
         grade = st.text_input(label="Grade", placeholder="e.g., A+, B, First Class", value=reapply.get("grade", "") if reapply else "")
 
+        st.markdown("##### 📸 Candidate Face Photo (required)")
+        st.caption("A clear front-facing photo. Used for biometric verification by employers.")
+        face_source = st.radio(
+            "Photo source",
+            options=["📷 Take live photo", "📁 Upload file"],
+            horizontal=True,
+            key="single_cert_face_source",
+        )
+        face_camera = None
+        face_upload = None
+        if face_source == "📷 Take live photo":
+            face_camera = st.camera_input(
+                "Capture candidate face",
+                key="single_cert_face_camera",
+            )
+        else:
+            face_upload = st.file_uploader(
+                "Upload candidate face photo",
+                type=["png", "jpg", "jpeg"],
+                accept_multiple_files=False,
+                key="single_cert_face_upload",
+            )
+        face_image = face_camera if face_camera is not None else face_upload
+
         submit = st.form_submit_button("Generate")
 
     if submit:
         if not all([uid, candidate_name, course_name, org_name, grade]):
             st.warning("Please fill all fields.")
+        elif face_image is None:
+            st.warning("Please upload or capture a candidate face photo to bind to this certificate.")
         else:
+            # Pre-flight: ensure the photo actually contains a usable face
+            # before we burn an on-chain transaction or upload to IPFS.
+            face_ok, face_err = detect_face(face_image)
+            if not face_ok:
+                st.error(f"❌ Face check failed: {face_err}")
+                st.stop()
             with st.spinner("Generating certificate..."):
                 pdf_file_path = f"{uid}_{candidate_name.strip().replace(' ', '_').lower()}.pdf"
                 institute_logo_path = "../assets/logo.jpg"
@@ -623,12 +663,31 @@ elif selected == "Generate Certificate":
                         # Add to Bloom Filter for fast verification lookups
                         bloom_add(certificate_id)
 
+                        # Bind candidate face to this certificate (mandatory at issuance)
+                        face_result = enroll_face_for_cert(
+                            certificate_id,
+                            face_image,
+                            owner_name=candidate_name,
+                            institute_email=st.session_state.user_email,
+                        )
+                        if face_result["success"]:
+                            st.success(
+                                f"🧑‍💼 Face profile bound to certificate ({face_result['sample_count']} sample)."
+                            )
+                        else:
+                            st.warning(
+                                "⚠️ Face enrollment failed: "
+                                + " | ".join(face_result.get("errors", ["unknown error"]))
+                                + " You can re-enroll from the Face ID Enrollment page."
+                            )
+
                         # Clean up old rejection record if this is a reapply
                         if reapply_cert_id:
                             remove_rejection(reapply_cert_id)
                             old_ipfs = reapply.get("ipfs_hash") if reapply else None
                             if old_ipfs:
                                 delete_pinata_file(old_ipfs)
+                            clear_face_profile(reapply_cert_id)
                             st.session_state.pop("reapply_data", None)
                             st.session_state.pop("reapply_cert_id", None)
 
@@ -659,6 +718,134 @@ elif selected == "Generate Certificate":
                     except Exception as e:
                         st.error(f"⚠️ Blockchain transaction failed: {str(e)}")
 
+# --- Face ID Enrollment ---
+elif selected == "Face ID Enrollment":
+    st.markdown("### 🧑‍💼 Face ID Enrollment")
+    st.info("Bind a live face profile to a certificate so it must be matched before the certificate can be viewed or verified.")
+
+    prefill_cert_id = st.session_state.get("face_enroll_cert_id", "")
+    with st.form("Face-ID-Lookup"):
+        certificate_id_input = st.text_input("Certificate ID", value=prefill_cert_id)
+        load_clicked = st.form_submit_button("Load Certificate")
+
+    # Load + cache the cert context in session_state so subsequent reruns
+    # (triggered by camera_input / file_uploader / Save button) can still see it.
+    if load_clicked:
+        cid = certificate_id_input.strip()
+        if not cid:
+            st.warning("Please enter a certificate ID.")
+            st.session_state.pop("face_enroll_context", None)
+        else:
+            certificate_context = None
+            try:
+                cert_data = contract.functions.getCertificate(cid).call()
+                if cert_data[5] != st.session_state.user_email:
+                    st.error("❌ This certificate was not issued by your institute.")
+                    st.session_state.pop("face_enroll_context", None)
+                    st.stop()
+
+                certificate_context = {
+                    "type": "individual",
+                    "certificate_id": cid,
+                    "candidate_name": cert_data[1],
+                    "course_name": cert_data[2],
+                    "org_name": cert_data[3],
+                    "institute_email": cert_data[5],
+                }
+            except Exception:
+                batch_id, batch_cert_data = find_certificate_batch(cid)
+                if batch_id is not None:
+                    try:
+                        batch_data = contract.functions.getBatch(int(batch_id)).call()
+                        if batch_data[1] != st.session_state.user_email:
+                            st.error("❌ This batch certificate was not issued by your institute.")
+                            st.session_state.pop("face_enroll_context", None)
+                            st.stop()
+
+                        certificate_context = {
+                            "type": "batch",
+                            "batch_id": batch_id,
+                            "certificate_id": cid,
+                            "candidate_name": batch_cert_data.get("candidate_name", ""),
+                            "course_name": batch_cert_data.get("course_name", ""),
+                            "org_name": batch_cert_data.get("org_name", ""),
+                            "institute_email": batch_data[1],
+                        }
+                    except Exception as e:
+                        st.error(f"❌ Could not load batch certificate details: {str(e)}")
+                        st.session_state.pop("face_enroll_context", None)
+                        st.stop()
+                else:
+                    st.error("❌ Certificate not found on blockchain or in the batch store.")
+                    st.session_state.pop("face_enroll_context", None)
+                    st.stop()
+
+            if certificate_context is not None:
+                st.session_state["face_enroll_context"] = certificate_context
+                st.session_state["face_enroll_cert_id"] = cid
+
+    # Render capture/save UI from cached context (survives reruns).
+    certificate_context = st.session_state.get("face_enroll_context")
+    if certificate_context:
+        certificate_id = certificate_context["certificate_id"]
+
+        profile = get_face_profile(certificate_id)
+        if profile:
+            st.warning(
+                f"An existing face profile is already stored for this certificate with {profile.get('sample_count', 0)} sample(s). Saving again will replace it."
+            )
+
+        st.markdown("#### Certificate Details")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**Candidate Name:** {certificate_context['candidate_name']}")
+            st.markdown(f"**Course:** {certificate_context['course_name']}")
+        with col2:
+            st.markdown(f"**Organization:** {certificate_context['org_name']}")
+            if certificate_context.get("type") == "batch":
+                st.markdown(f"**Batch ID:** {certificate_context.get('batch_id')}")
+
+        st.markdown("#### Capture Face Samples")
+        st.caption("Recommended: capture at least one clear image with the face centered. Multiple samples improve matching quality.")
+        camera_sample = st.camera_input("Capture owner face", key=f"face_enroll_camera_{certificate_id}")
+        uploaded_samples = st.file_uploader(
+            "Optional additional face images",
+            type=["png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+            key=f"face_enroll_upload_{certificate_id}",
+        )
+
+        save_clicked = st.button("💾 Save Face Profile", key=f"save_face_{certificate_id}", type="primary")
+        if save_clicked:
+            face_inputs = []
+            if camera_sample is not None:
+                face_inputs.append(camera_sample)
+            if uploaded_samples:
+                face_inputs.extend(uploaded_samples)
+
+            if not face_inputs:
+                st.warning("Please capture or upload at least one face image.")
+            else:
+                result = save_face_samples(
+                    certificate_id,
+                    face_inputs,
+                    owner_name=certificate_context["candidate_name"],
+                    institute_email=certificate_context["institute_email"],
+                )
+                if result["success"]:
+                    st.success(f"✅ Face profile saved with {result['sample_count']} sample(s).")
+                    if result.get("errors"):
+                        st.warning("Some samples were skipped: " + " | ".join(result["errors"]))
+                    st.session_state["face_enroll_owner_name"] = certificate_context["candidate_name"]
+                else:
+                    st.error("❌ Face enrollment failed.")
+                    if result.get("errors"):
+                        st.error(" | ".join(result["errors"]))
+
+        if st.button("Clear loaded certificate", key=f"clear_face_ctx_{certificate_id}"):
+            st.session_state.pop("face_enroll_context", None)
+            st.rerun()
+
 # --- Certificate Viewing ---
 elif selected == "View Certificates":
     with st.form("View-Certificate"):
@@ -685,6 +872,13 @@ elif selected == "Bulk Generate":
 
     uploaded_csv = st.file_uploader("Upload CSV", type=["csv"])
 
+    st.markdown("##### 📸 Candidate Face Photos (required)")
+    st.caption(
+        "Upload a ZIP of face images. Image filename (without extension) must match either the **Number** column "
+        "or the candidate **Name** (case-insensitive, spaces → underscores). Rows without a matching image will be skipped."
+    )
+    uploaded_face_zip = st.file_uploader("Upload Face Images (ZIP)", type=["zip"], key="bulk_face_zip")
+
     if uploaded_csv:
         import pandas as pd
         try:
@@ -705,117 +899,260 @@ elif selected == "Bulk Generate":
             preview_df.index = range(1, len(preview_df) + 1)
             st.dataframe(preview_df, use_container_width=True)
 
-            if st.button("🚀 Generate All Certificates", type="primary"):
-                with st.spinner(f"Generating {len(df)} certificates..."):
-                    certificates = []
-                    leaves = []
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
+            if st.button("� Validate Inputs", type="secondary"):
+                # Build the face image map from the ZIP and pre-flight every
+                # row: detect a usable face in the matched image. The user
+                # then sees a full report and must explicitly confirm before
+                # any blockchain transaction is sent.
+                if uploaded_face_zip is None:
+                    st.error("❌ Please upload a ZIP of candidate face photos before validating.")
+                    st.stop()
 
-                    for idx, row in df.iterrows():
-                        candidate_name = str(row["name"]).strip()
-                        course_name = str(row["course"]).strip()
-                        org_name = str(row["organization"]).strip()
-                        grade = str(row["grade"]).strip()
+                face_image_map = {}
+                import zipfile as _zip
+                from io import BytesIO as _BytesIO
+                try:
+                    with _zip.ZipFile(_BytesIO(uploaded_face_zip.getvalue())) as zf:
+                        for member in zf.namelist():
+                            if member.endswith("/"):
+                                continue
+                            ext = os.path.splitext(member)[1].lower()
+                            if ext not in (".png", ".jpg", ".jpeg"):
+                                continue
+                            stem = os.path.splitext(os.path.basename(member))[0].strip().lower()
+                            if not stem:
+                                continue
+                            face_image_map[stem] = zf.read(member)
+                except Exception as exc:
+                    st.error(f"❌ Could not read face ZIP: {exc}")
+                    st.stop()
 
-                        if not all([candidate_name, course_name, org_name, grade]):
-                            st.warning(f"⚠️ Skipping row {idx + 1}: missing fields")
-                            continue
+                validated_rows = []      # rows ready to issue
+                problem_rows = []        # rows that will be skipped
+                progress = st.progress(0.0)
+                status = st.empty()
+                for idx, row in df.iterrows():
+                    candidate_name = str(row["name"]).strip()
+                    course_name = str(row["course"]).strip()
+                    org_name = str(row["organization"]).strip()
+                    grade = str(row["grade"]).strip()
+                    row_number = str(row["number"]).strip().lower()
+                    name_key = candidate_name.lower().replace(" ", "_")
 
-                        # Auto-generate UID
-                        uid = get_next_uid()
+                    status.text(f"Validating {idx + 1}/{len(df)}: {candidate_name or '(unnamed)'}")
+                    progress.progress((idx + 1) / max(len(df), 1))
 
-                        status_text.text(f"Processing {idx + 1}/{len(df)}: {candidate_name}")
-
-                        # Generate PDF
-                        pdf_file_path = f"{uid}_{candidate_name.strip().replace(' ', '_').lower()}.pdf"
-                        institute_logo_path = "../assets/logo.jpg"
-                        generate_certificate(pdf_file_path, uid, candidate_name, course_name, org_name, institute_logo_path, grade)
-
-                        # Encrypt and upload
-                        encryption_key = generate_key()
-                        encrypted_bytes = encrypt_file(pdf_file_path, encryption_key)
-                        encrypted_filename = f"{os.path.splitext(pdf_file_path)[0]}.enc"
-                        ipfs_hash = upload_bytes_to_pinata(encrypted_bytes, encrypted_filename, st.session_state.user_email)
-                        os.remove(pdf_file_path)
-
-                        if not ipfs_hash:
-                            st.error(f"❌ Failed to upload certificate for {candidate_name}")
-                            continue
-
-                        # Generate salt and compute leaf hash
-                        salt = os.urandom(16).hex()
-                        certificate_id = hashlib.sha256(f"{salt}{uid}{candidate_name}{course_name}{org_name}{grade}".encode("utf-8")).hexdigest()
-                        leaf_hash = compute_leaf(salt, uid, candidate_name, course_name, org_name, grade)
-
-                        # Save encryption key
-                        save_encryption_key(certificate_id, encryption_key, st.session_state.user_email)
-
-                        uid_created(uid)
-
-                        certificates.append({
-                            "certificate_id": certificate_id,
-                            "leaf_hash": leaf_hash,
-                            "uid": uid,
-                            "candidate_name": candidate_name,
-                            "course_name": course_name,
-                            "org_name": org_name,
-                            "salt": salt,
-                            "grade": grade,
-                            "ipfs_hash": ipfs_hash
+                    # Required fields present?
+                    if not all([candidate_name, course_name, org_name, grade]):
+                        problem_rows.append({
+                            "row": idx + 1,
+                            "candidate_name": candidate_name or "(unnamed)",
+                            "issue": "Missing required field(s) (name/course/organization/grade)",
                         })
-                        leaves.append(leaf_hash)
+                        continue
 
-                        progress_bar.progress((idx + 1) / len(df))
+                    face_bytes = (
+                        face_image_map.get(row_number)
+                        or face_image_map.get(name_key)
+                        or face_image_map.get(candidate_name.lower())
+                    )
+                    if face_bytes is None:
+                        problem_rows.append({
+                            "row": idx + 1,
+                            "candidate_name": candidate_name,
+                            "issue": (
+                                f"No face image found in ZIP "
+                                f"(looked for '{row_number}.*' or '{name_key}.*')"
+                            ),
+                        })
+                        continue
 
-                    if not certificates:
-                        st.error("❌ No certificates were generated.")
-                        st.stop()
+                    ok, msg = detect_face(face_bytes)
+                    if not ok:
+                        problem_rows.append({
+                            "row": idx + 1,
+                            "candidate_name": candidate_name,
+                            "issue": f"Face check failed: {msg}",
+                        })
+                        continue
 
-                    # Build Merkle tree
-                    status_text.text("Building Merkle tree...")
-                    merkle_root, tree_layers = build_merkle_tree(leaves)
+                    validated_rows.append({
+                        "row": idx + 1,
+                        "candidate_name": candidate_name,
+                        "course_name": course_name,
+                        "org_name": org_name,
+                        "grade": grade,
+                        "face_bytes": face_bytes,
+                    })
 
-                    # Convert hex root to bytes32 for Solidity
-                    root_bytes = bytes.fromhex(merkle_root)
+                progress.empty()
+                status.empty()
 
-                    # Store batch on blockchain (1 transaction for all certs!)
-                    status_text.text("Storing Merkle root on blockchain...")
-                    try:
-                        contract.functions.proposeBatch(
-                            root_bytes,
-                            st.session_state.user_email,
-                            len(certificates)
-                        ).transact({'from': w3.eth.accounts[0]})
+                st.session_state["bulk_validated_rows"] = validated_rows
+                st.session_state["bulk_problem_rows"] = problem_rows
+                st.session_state["bulk_total_rows"] = int(len(df))
+                st.session_state.pop("bulk_confirm", None)
 
-                        # Get the batch ID (latest batchCount)
-                        batch_id = contract.functions.getBatchCount().call()
+            # Render validation summary + confirmation gate (persists across reruns).
+            if "bulk_validated_rows" in st.session_state:
+                validated_rows = st.session_state["bulk_validated_rows"]
+                problem_rows = st.session_state["bulk_problem_rows"]
+                total_rows = st.session_state["bulk_total_rows"]
 
-                        # Save proofs locally
-                        save_batch_proofs(batch_id, certificates, tree_layers, merkle_root)
+                st.markdown("---")
+                st.markdown("#### ✅ Validation Summary")
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("Total rows", total_rows)
+                col_b.metric("Ready to issue", len(validated_rows))
+                col_c.metric("Will be skipped", len(problem_rows), delta_color="inverse")
 
-                        # Add all batch certificates to Bloom Filter
-                        for cert in certificates:
-                            bloom_add(cert["certificate_id"])
+                if problem_rows:
+                    st.warning(
+                        f"⚠️ {len(problem_rows)} of {total_rows} rows have problems and will be **skipped** if you proceed."
+                    )
+                    import pandas as _pd
+                    st.dataframe(
+                        _pd.DataFrame(problem_rows),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
-                        progress_bar.progress(1.0)
-                        status_text.text("")
+                if not validated_rows:
+                    st.error("❌ No rows are valid. Fix the issues above and re-validate before generating.")
+                    proceed = False
+                else:
+                    if problem_rows:
+                        confirmed = st.checkbox(
+                            f"I understand that {len(problem_rows)} row(s) will be skipped, "
+                            f"and I want to issue certificates for the remaining {len(validated_rows)}.",
+                            key="bulk_confirm",
+                        )
+                    else:
+                        st.success("All rows passed validation. Ready to generate.")
+                        confirmed = True
 
-                        st.success(f"🎉 Batch of {len(certificates)} certificates proposed!")
-                        st.success(f"Batch ID: `{batch_id}`")
-                        st.info(f"Merkle Root: `{merkle_root}`")
-                        st.info("⏳ Batch is pending admin approval.")
+                    proceed = st.button(
+                        f"🚀 Generate {len(validated_rows)} Certificate(s)",
+                        type="primary",
+                        disabled=not confirmed,
+                        key="bulk_generate_now",
+                    )
 
-                        # Show certificate IDs
-                        st.markdown("#### Generated Certificate IDs")
-                        for cert in certificates:
-                            st.markdown(f"- **{cert['candidate_name']}**: `{cert['certificate_id']}`")
+                if validated_rows and proceed:
+                    with st.spinner(f"Generating {len(validated_rows)} certificates..."):
+                        certificates = []
+                        leaves = []
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
 
-                        # Store for bulk download
-                        st.session_state["bulk_generated_certs"] = certificates
+                        for i, vrow in enumerate(validated_rows):
+                            candidate_name = vrow["candidate_name"]
+                            course_name = vrow["course_name"]
+                            org_name = vrow["org_name"]
+                            grade = vrow["grade"]
+                            face_bytes = vrow["face_bytes"]
 
-                    except Exception as e:
-                        st.error(f"❌ Blockchain transaction failed: {str(e)}")
+                            uid = get_next_uid()
+                            status_text.text(f"Processing {i + 1}/{len(validated_rows)}: {candidate_name}")
+
+                            pdf_file_path = f"{uid}_{candidate_name.strip().replace(' ', '_').lower()}.pdf"
+                            institute_logo_path = "../assets/logo.jpg"
+                            generate_certificate(pdf_file_path, uid, candidate_name, course_name, org_name, institute_logo_path, grade)
+
+                            encryption_key = generate_key()
+                            encrypted_bytes = encrypt_file(pdf_file_path, encryption_key)
+                            encrypted_filename = f"{os.path.splitext(pdf_file_path)[0]}.enc"
+                            ipfs_hash = upload_bytes_to_pinata(encrypted_bytes, encrypted_filename, st.session_state.user_email)
+                            os.remove(pdf_file_path)
+
+                            if not ipfs_hash:
+                                st.error(f"❌ Failed to upload certificate for {candidate_name}")
+                                continue
+
+                            salt = os.urandom(16).hex()
+                            certificate_id = hashlib.sha256(
+                                f"{salt}{uid}{candidate_name}{course_name}{org_name}{grade}".encode("utf-8")
+                            ).hexdigest()
+                            leaf_hash = compute_leaf(salt, uid, candidate_name, course_name, org_name, grade)
+
+                            save_encryption_key(certificate_id, encryption_key, st.session_state.user_email)
+
+                            face_result = enroll_face_for_cert(
+                                certificate_id,
+                                face_bytes,
+                                owner_name=candidate_name,
+                                institute_email=st.session_state.user_email,
+                            )
+                            if not face_result["success"]:
+                                st.warning(
+                                    f"⚠️ Face enrollment failed for {candidate_name}: "
+                                    + " | ".join(face_result.get("errors", ["unknown"]))
+                                )
+
+                            uid_created(uid)
+
+                            certificates.append({
+                                "certificate_id": certificate_id,
+                                "leaf_hash": leaf_hash,
+                                "uid": uid,
+                                "candidate_name": candidate_name,
+                                "course_name": course_name,
+                                "org_name": org_name,
+                                "salt": salt,
+                                "grade": grade,
+                                "ipfs_hash": ipfs_hash
+                            })
+                            leaves.append(leaf_hash)
+
+                            progress_bar.progress((i + 1) / len(validated_rows))
+
+                        if not certificates:
+                            st.error("❌ No certificates were generated.")
+                            st.stop()
+
+                        # Build Merkle tree
+                        status_text.text("Building Merkle tree...")
+                        merkle_root, tree_layers = build_merkle_tree(leaves)
+                        root_bytes = bytes.fromhex(merkle_root)
+
+                        status_text.text("Storing Merkle root on blockchain...")
+                        try:
+                            contract.functions.proposeBatch(
+                                root_bytes,
+                                st.session_state.user_email,
+                                len(certificates)
+                            ).transact({'from': w3.eth.accounts[0]})
+
+                            batch_id = contract.functions.getBatchCount().call()
+                            save_batch_proofs(batch_id, certificates, tree_layers, merkle_root)
+
+                            for cert in certificates:
+                                bloom_add(cert["certificate_id"])
+
+                            progress_bar.progress(1.0)
+                            status_text.text("")
+
+                            st.success(f"🎉 Batch of {len(certificates)} certificates proposed!")
+                            st.success(f"Batch ID: `{batch_id}`")
+                            st.info(f"Merkle Root: `{merkle_root}`")
+                            st.info("⏳ Batch is pending admin approval.")
+
+                            # Show certificate IDs as a copy-friendly table
+                            st.markdown("#### Generated Certificate IDs")
+                            import pandas as _pd
+                            id_df = _pd.DataFrame([
+                                {"Candidate": c["candidate_name"], "UID": c["uid"], "Certificate ID": c["certificate_id"]}
+                                for c in certificates
+                            ])
+                            st.dataframe(id_df, use_container_width=True, hide_index=True)
+
+                            st.session_state["bulk_generated_certs"] = certificates
+                            # Clear validation cache so the user must re-validate for the next batch.
+                            for k in ("bulk_validated_rows", "bulk_problem_rows", "bulk_total_rows", "bulk_confirm"):
+                                st.session_state.pop(k, None)
+
+                        except Exception as e:
+                            st.error(f"❌ Blockchain transaction failed: {str(e)}")
 
         except Exception as e:
             st.error(f"❌ Error reading CSV: {str(e)}")
