@@ -125,10 +125,34 @@ def _load_index():
 
 def _save_index(data):
     FACE_STORE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = FACE_INDEX_PATH.with_name(FACE_INDEX_PATH.name + ".tmp")
+    tmp = FACE_INDEX_PATH.with_name(f"{FACE_INDEX_PATH.name}.{os.getpid()}.{time.time_ns()}.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
-    os.replace(tmp, FACE_INDEX_PATH)
+
+    # Windows can briefly deny replacing a JSON file if Streamlit, antivirus,
+    # or another Python rerun has the destination open. Retry the atomic replace;
+    # if Windows still refuses, fall back to a normal overwrite so enrollment
+    # does not fail after the blockchain/IPFS work has already succeeded.
+    last_error = None
+    for _ in range(5):
+        try:
+            os.replace(tmp, FACE_INDEX_PATH)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.1)
+
+    try:
+        with open(FACE_INDEX_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except PermissionError:
+        raise last_error
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def _coerce_bytes(image_source):

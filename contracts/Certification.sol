@@ -43,16 +43,47 @@ contract Certification {
     uint256[] private pendingBatchIds;
     string[] private instituteEmails;
 
+    address[] private adminSigners;
+    mapping(address => bool) public isAdminSigner;
+    uint256 public approvalThreshold;
+    mapping(string => mapping(address => bool)) private certificateApprovals;
+    mapping(string => uint256) public certificateApprovalCounts;
+    mapping(uint256 => mapping(address => bool)) private batchApprovals;
+    mapping(uint256 => uint256) public batchApprovalCounts;
+
     event certificateGenerated(string certificate_id, string institute_email);
     event certificateApproved(string certificate_id);
+    event certificateApprovalRecorded(string certificate_id, address admin, uint256 approval_count, uint256 required_count);
     event certificateProposed(string certificate_id, string institute_email);
     event certificateRevoked(string certificate_id);
     event revocationProposed(string certificate_id, string institute_email);
     event revocationApproved(string certificate_id);
     event batchProposed(uint256 batch_id, string institute_email, uint256 certificate_count);
     event batchApproved(uint256 batch_id);
+    event batchApprovalRecorded(uint256 batch_id, address admin, uint256 approval_count, uint256 required_count);
     event instituteRegistered(string email, string name);
     event instituteVerified(string email);
+
+    modifier onlyAdminSigner() {
+        require(isAdminSigner[msg.sender], "Caller is not an admin signer");
+        _;
+    }
+
+    constructor(address[] memory _adminSigners, uint256 _approvalThreshold) {
+        require(_adminSigners.length > 0, "At least one admin signer required");
+        require(_approvalThreshold > 0, "Approval threshold must be greater than zero");
+        require(_approvalThreshold <= _adminSigners.length, "Threshold cannot exceed signer count");
+
+        approvalThreshold = _approvalThreshold;
+
+        for (uint256 i = 0; i < _adminSigners.length; i++) {
+            address signer = _adminSigners[i];
+            require(signer != address(0), "Admin signer cannot be zero address");
+            require(!isAdminSigner[signer], "Duplicate admin signer");
+            isAdminSigner[signer] = true;
+            adminSigners.push(signer);
+        }
+    }
 
     function registerInstitute(
         string memory _email,
@@ -75,7 +106,7 @@ contract Certification {
         emit instituteRegistered(_email, _name);
     }
 
-    function verifyInstitute(string memory _email) public {
+    function verifyInstitute(string memory _email) public onlyAdminSigner {
         require(bytes(institutes[_email].email).length != 0, "Institute not found");
         require(!institutes[_email].is_verified, "Institute already verified");
         
@@ -129,8 +160,9 @@ contract Certification {
         emit certificateProposed(_certificate_id, _institute_email);
     }
 
-    // Admin approves a pending certificate
-    function approveCertificate(string memory _certificate_id) public {
+    // Admin records one approval for a pending certificate. The certificate is
+    // finalized only after approvalThreshold distinct admin signers approve it.
+    function approveCertificate(string memory _certificate_id) public onlyAdminSigner {
         require(
             bytes(certificates[_certificate_id].ipfs_hash).length != 0,
             "Certificate does not exist"
@@ -139,11 +171,27 @@ contract Certification {
             !certificates[_certificate_id].is_approved,
             "Certificate is already approved"
         );
+        require(
+            !certificateApprovals[_certificate_id][msg.sender],
+            "Admin already approved this certificate"
+        );
+
+        certificateApprovals[_certificate_id][msg.sender] = true;
+        certificateApprovalCounts[_certificate_id] += 1;
+
+        emit certificateApprovalRecorded(
+            _certificate_id,
+            msg.sender,
+            certificateApprovalCounts[_certificate_id],
+            approvalThreshold
+        );
+
+        if (certificateApprovalCounts[_certificate_id] < approvalThreshold) {
+            return;
+        }
 
         certificates[_certificate_id].is_approved = true;
         certificateIds.push(_certificate_id);
-
-        // Remove from pending list
         _removePendingCertificate(_certificate_id);
 
         emit certificateApproved(_certificate_id);
@@ -151,7 +199,7 @@ contract Certification {
     }
 
     // Admin rejects a pending certificate
-    function rejectCertificate(string memory _certificate_id) public {
+    function rejectCertificate(string memory _certificate_id) public onlyAdminSigner {
         require(
             bytes(certificates[_certificate_id].ipfs_hash).length != 0,
             "Certificate does not exist"
@@ -214,7 +262,7 @@ contract Certification {
     }
 
     // Admin approves revocation
-    function approveRevocation(string memory _certificate_id) public {
+    function approveRevocation(string memory _certificate_id) public onlyAdminSigner {
         require(
             pendingRevocations[_certificate_id],
             "No pending revocation for this certificate"
@@ -231,7 +279,7 @@ contract Certification {
     }
 
     // Admin rejects revocation request
-    function rejectRevocation(string memory _certificate_id) public {
+    function rejectRevocation(string memory _certificate_id) public onlyAdminSigner {
         require(
             pendingRevocations[_certificate_id],
             "No pending revocation for this certificate"
@@ -345,6 +393,21 @@ contract Certification {
         return instituteEmails;
     }
 
+    function getAdminSigners() public view returns (address[] memory) {
+        return adminSigners;
+    }
+
+    function getCertificateApprovalStatus(
+        string memory _certificate_id,
+        address _admin
+    ) public view returns (uint256 _approval_count, uint256 _required_count, bool _approved_by_admin) {
+        return (
+            certificateApprovalCounts[_certificate_id],
+            approvalThreshold,
+            certificateApprovals[_certificate_id][_admin]
+        );
+    }
+
     // ===== Merkle Batch Functions =====
 
     // Institute proposes a batch of certificates
@@ -371,10 +434,26 @@ contract Certification {
         emit batchProposed(batchCount, _institute_email, _certificate_count);
     }
 
-    // Admin approves a batch
-    function approveBatch(uint256 _batch_id) public {
+    // Admin records one approval for a batch. The batch is finalized only after
+    // approvalThreshold distinct admin signers approve it.
+    function approveBatch(uint256 _batch_id) public onlyAdminSigner {
         require(_batch_id > 0 && _batch_id <= batchCount, "Invalid batch ID");
         require(!batches[_batch_id].is_approved, "Batch already approved");
+        require(!batchApprovals[_batch_id][msg.sender], "Admin already approved this batch");
+
+        batchApprovals[_batch_id][msg.sender] = true;
+        batchApprovalCounts[_batch_id] += 1;
+
+        emit batchApprovalRecorded(
+            _batch_id,
+            msg.sender,
+            batchApprovalCounts[_batch_id],
+            approvalThreshold
+        );
+
+        if (batchApprovalCounts[_batch_id] < approvalThreshold) {
+            return;
+        }
 
         batches[_batch_id].is_approved = true;
         _removePendingBatch(_batch_id);
@@ -383,7 +462,7 @@ contract Certification {
     }
 
     // Admin rejects a batch
-    function rejectBatch(uint256 _batch_id) public {
+    function rejectBatch(uint256 _batch_id) public onlyAdminSigner {
         require(_batch_id > 0 && _batch_id <= batchCount, "Invalid batch ID");
         require(!batches[_batch_id].is_approved, "Cannot reject approved batch");
 
@@ -416,6 +495,17 @@ contract Certification {
 
     function getBatchCount() public view returns (uint256) {
         return batchCount;
+    }
+
+    function getBatchApprovalStatus(
+        uint256 _batch_id,
+        address _admin
+    ) public view returns (uint256 _approval_count, uint256 _required_count, bool _approved_by_admin) {
+        return (
+            batchApprovalCounts[_batch_id],
+            approvalThreshold,
+            batchApprovals[_batch_id][_admin]
+        );
     }
 
     // ===== Internal Helpers =====

@@ -306,78 +306,84 @@ if selected == options[0]:
 elif selected == options[1]:
     with st.form("Validate-Certificate"):
         st.markdown("#### Enter the Certificate ID to verify")
-        certificate_id = st.text_input("Certificate ID")
+        certificate_id = st.text_input("Certificate ID", value=st.session_state.get("verify_certificate_id", ""))
         submit = st.form_submit_button("Verify")
 
     if submit:
         if not certificate_id.strip():
             st.warning("Please enter a certificate ID.")
+            st.session_state.pop("verify_certificate_id", None)
         else:
-            # Bloom Filter pre-check — fast O(1) membership test
-            if not bloom_check(certificate_id.strip()):
-                st.error("❌ Certificate not found. (Bloom Filter: definite negative)")
-                st.stop()
+            st.session_state["verify_certificate_id"] = certificate_id.strip()
 
-            # First check if it's a batch certificate
-            batch_id, batch_cert_data = find_certificate_batch(certificate_id)
-            if batch_id is not None:
-                salt = batch_cert_data["salt"]
-                uid = batch_cert_data["uid"]
-                candidate_name = batch_cert_data["candidate_name"]
-                course_name = batch_cert_data["course_name"]
-                org_name = batch_cert_data["org_name"]
-                grade = batch_cert_data.get("grade", "")
-                face_gate = _gate_owner_face(certificate_id, candidate_name)
+    certificate_id = st.session_state.get("verify_certificate_id")
+    if certificate_id:
+        # Bloom Filter pre-check — useful hint only. The local Bloom file can
+        # be stale after reset/migration, so never stop before checking the
+        # chain and Merkle store.
+        if not bloom_check(certificate_id):
+            st.warning("⚠️ Bloom Filter did not contain this ID. Continuing with blockchain/Merkle lookup...")
+
+        # First check if it's a batch certificate
+        batch_id, batch_cert_data = find_certificate_batch(certificate_id)
+        if batch_id is not None:
+            salt = batch_cert_data["salt"]
+            uid = batch_cert_data["uid"]
+            candidate_name = batch_cert_data["candidate_name"]
+            course_name = batch_cert_data["course_name"]
+            org_name = batch_cert_data["org_name"]
+            grade = batch_cert_data.get("grade", "")
+            face_gate = _gate_owner_face(certificate_id, candidate_name)
+            if face_gate is not True:
+                st.stop()
+            _verify_batch_certificate(batch_id, batch_cert_data, certificate_id, salt, uid, candidate_name, course_name, org_name, grade)
+        else:
+            # Individual cert verification
+            try:
+                cert_data = contract.functions.getCertificate(certificate_id).call()
+                face_gate = _gate_owner_face(certificate_id, cert_data[1])
                 if face_gate is not True:
                     st.stop()
-                _verify_batch_certificate(batch_id, batch_cert_data, certificate_id, salt, uid, candidate_name, course_name, org_name, grade)
-            else:
-                # Individual cert verification
+                is_revoked = contract.functions.isRevoked(certificate_id).call()
+                
+                institute_email = cert_data[5]
+                digital_signature = cert_data[6]
+                cert_grade = cert_data[8]
+                
+                certificate_data = {
+                    "uid": cert_data[0],
+                    "candidate_name": cert_data[1],
+                    "course_name": cert_data[2],
+                    "org_name": cert_data[3],
+                    "ipfs_hash": cert_data[4],
+                    "certificate_id": certificate_id,
+                    "salt": cert_data[7],
+                    "grade": cert_grade
+                }
+                
+                signature_valid = crypto_auth.verify_certificate_signature(
+                    institute_email, certificate_data, digital_signature
+                )
+                
+                institute_name = ""
+                institute_verified = False
                 try:
-                    cert_data = contract.functions.getCertificate(certificate_id).call()
-                    face_gate = _gate_owner_face(certificate_id, cert_data[1])
-                    if face_gate is not True:
-                        st.stop()
-                    is_revoked = contract.functions.isRevoked(certificate_id).call()
-                    
-                    institute_email = cert_data[5]
-                    digital_signature = cert_data[6]
-                    cert_grade = cert_data[8]
-                    
-                    certificate_data = {
-                        "uid": cert_data[0],
-                        "candidate_name": cert_data[1],
-                        "course_name": cert_data[2],
-                        "org_name": cert_data[3],
-                        "ipfs_hash": cert_data[4],
-                        "certificate_id": certificate_id,
-                        "salt": cert_data[7],
-                        "grade": cert_grade
-                    }
-                    
-                    signature_valid = crypto_auth.verify_certificate_signature(
-                        institute_email, certificate_data, digital_signature
-                    )
-                    
-                    institute_name = ""
-                    institute_verified = False
-                    try:
-                        institute_info = contract.functions.getInstitute(institute_email).call()
-                        institute_name = institute_info[0]
-                        institute_verified = institute_info[2]
-                    except:
-                        pass
+                    institute_info = contract.functions.getInstitute(institute_email).call()
+                    institute_name = institute_info[0]
+                    institute_verified = institute_info[2]
+                except:
+                    pass
 
-                    result = contract.functions.isVerified(certificate_id).call()
-                    _show_verification_result(
-                        result, is_revoked,
-                        cert_data[1], cert_data[3], cert_data[2], cert_grade,
-                        signature_valid, institute_name, institute_verified
-                    )
-                        
-                except Exception as e:
-                    print(e)
-                    st.error("❌ Error validating certificate. Please check the Certificate ID.")
+                result = contract.functions.isVerified(certificate_id).call()
+                _show_verification_result(
+                    result, is_revoked,
+                    cert_data[1], cert_data[3], cert_data[2], cert_grade,
+                    signature_valid, institute_name, institute_verified
+                )
+                    
+            except Exception as e:
+                print(e)
+                st.error("❌ Error validating certificate. Please check the Certificate ID.")
 
 # --- Option 3: Institute Verification ---
 elif selected == options[2]:

@@ -1,6 +1,7 @@
 import streamlit as st
 from connection import contract, w3
 from utils.auth import AuthManager
+from utils.admin_config import ADMIN_EMAILS, ADMIN_SIGNER_EMAILS
 from utils.streamlit_utils import hide_sidebar
 from utils.pinata_utils import delete_pinata_file
 from utils.face_utils import clear_face_profile
@@ -11,17 +12,28 @@ from datetime import datetime
 hide_sidebar()
 auth = AuthManager()
 
-# List of allowed admin emails - add your admin emails here
-ADMIN_EMAILS = [
-    "admin@blockcert.com",
-    "admin@example.com",
-    "admin@bc.com",
-    # Add more admin emails as needed
-]
+def get_current_admin_account():
+    """Map the logged-in admin email to one of the 3 on-chain signer accounts."""
+    email = st.session_state.get("user_email", "").strip().lower()
+    signer_emails = [e.lower() for e in ADMIN_SIGNER_EMAILS]
+    if email not in signer_emails:
+        st.error("This admin account is not configured as one of the 3 on-chain approval signers.")
+        st.stop()
+
+    signer_index = signer_emails.index(email)
+    accounts = w3.eth.accounts
+    if len(accounts) <= signer_index:
+        st.error("Ganache does not expose enough accounts for the configured admin signers.")
+        st.stop()
+    return accounts[signer_index]
+
 
 auth.require_auth(allowed_roles=("admin",))
 
+current_admin_account = get_current_admin_account()
+
 st.markdown("<h1 style='text-align: center;'>🛡️ Admin Dashboard</h1>", unsafe_allow_html=True)
+st.caption(f"On-chain admin signer: `{current_admin_account}`")
 st.markdown("---")
 
 # Tabs for different admin functions
@@ -75,7 +87,7 @@ with tab1:
                             try:
                                 contract.functions.verifyInstitute(
                                     institute['email']
-                                ).transact({'from': w3.eth.accounts[0]})
+                                ).transact({'from': current_admin_account})
                                 st.success(f"✅ {institute['name']} has been verified!")
                                 st.rerun()
                             except Exception as e:
@@ -145,13 +157,27 @@ with tab2:
                     #            [4]=ipfs_hash, [5]=institute_email, [6]=digital_signature, [7]=salt, [8]=grade, [9]=timestamp
                     
                     with st.expander(f"📜 Certificate: {cert_data[1]} — {cert_data[2]}", expanded=True):
+                        approval_count, required_count, approved_by_me = contract.functions.getCertificateApprovalStatus(
+                            cert_id,
+                            current_admin_account
+                        ).call()
+                        st.info(f"Multi-signature approval: **{approval_count}/{required_count}** admin approvals recorded.")
+                        if approved_by_me:
+                            st.success("You have already approved this certificate.")
+
                         # Action buttons
                         col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
                         with col_btn1:
-                            if st.button("✅ Approve", key=f"approve_cert_{idx}", type="primary", use_container_width=True):
+                            if st.button(
+                                "✅ Approve" if not approved_by_me else "✅ Approved by you",
+                                key=f"approve_cert_{idx}",
+                                type="primary",
+                                use_container_width=True,
+                                disabled=approved_by_me,
+                            ):
                                 try:
-                                    contract.functions.approveCertificate(cert_id).transact({'from': w3.eth.accounts[0]})
-                                    st.success(f"✅ Certificate approved!")
+                                    contract.functions.approveCertificate(cert_id).transact({'from': current_admin_account})
+                                    st.success("✅ Approval recorded. The certificate becomes active after 2 of 3 admin approvals.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ Approval failed: {str(e)}")
@@ -183,7 +209,7 @@ with tab2:
                                                 "grade": cert_data[8],
                                             }
                                             save_rejection(cert_id, remarks.strip(), st.session_state.user_email, cert_info)
-                                            contract.functions.rejectCertificate(cert_id).transact({'from': w3.eth.accounts[0]})
+                                            contract.functions.rejectCertificate(cert_id).transact({'from': current_admin_account})
                                             clear_face_profile(cert_id)
                                             st.success("✅ Certificate rejected with remarks.")
                                             st.rerun()
@@ -247,12 +273,26 @@ with tab3:
                     merkle_root_hex = batch_data[0].hex()
                     
                     with st.expander(f"📦 Batch #{batch_id} — {batch_data[2]} certificates", expanded=True):
+                        approval_count, required_count, approved_by_me = contract.functions.getBatchApprovalStatus(
+                            batch_id,
+                            current_admin_account
+                        ).call()
+                        st.info(f"Multi-signature approval: **{approval_count}/{required_count}** admin approvals recorded.")
+                        if approved_by_me:
+                            st.success("You have already approved this batch.")
+
                         col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
                         with col_btn1:
-                            if st.button("✅ Approve Batch", key=f"approve_batch_{idx}", type="primary", use_container_width=True):
+                            if st.button(
+                                "✅ Approve Batch" if not approved_by_me else "✅ Approved by you",
+                                key=f"approve_batch_{idx}",
+                                type="primary",
+                                use_container_width=True,
+                                disabled=approved_by_me,
+                            ):
                                 try:
-                                    contract.functions.approveBatch(batch_id).transact({'from': w3.eth.accounts[0]})
-                                    st.success(f"✅ Batch #{batch_id} approved!")
+                                    contract.functions.approveBatch(batch_id).transact({'from': current_admin_account})
+                                    st.success(f"✅ Approval recorded for batch #{batch_id}. The batch becomes active after 2 of 3 admin approvals.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ Approval failed: {str(e)}")
@@ -279,7 +319,7 @@ with tab3:
                                                 st.session_state.user_email,
                                                 batch_data[1], batch_data[2]
                                             )
-                                            contract.functions.rejectBatch(batch_id).transact({'from': w3.eth.accounts[0]})
+                                            contract.functions.rejectBatch(batch_id).transact({'from': current_admin_account})
                                             # Clean up any face profiles bound to certs in this batch
                                             try:
                                                 from utils.merkle_utils import _load_store as _ms_load
@@ -436,7 +476,7 @@ with tab4:
                         with col_btn1:
                             if st.button("✅ Approve Revocation", key=f"approve_rev_{idx}", type="primary", use_container_width=True):
                                 try:
-                                    contract.functions.approveRevocation(cert_id).transact({'from': w3.eth.accounts[0]})
+                                    contract.functions.approveRevocation(cert_id).transact({'from': current_admin_account})
                                     # Also delete from IPFS
                                     if display_ipfs:
                                         delete_pinata_file(display_ipfs)
@@ -449,7 +489,7 @@ with tab4:
                         with col_btn2:
                             if st.button("❌ Reject Revocation", key=f"reject_rev_{idx}", type="secondary", use_container_width=True):
                                 try:
-                                    contract.functions.rejectRevocation(cert_id).transact({'from': w3.eth.accounts[0]})
+                                    contract.functions.rejectRevocation(cert_id).transact({'from': current_admin_account})
                                     st.success("✅ Revocation request rejected. Certificate remains active.")
                                     st.rerun()
                                 except Exception as e:

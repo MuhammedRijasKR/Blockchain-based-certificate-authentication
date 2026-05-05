@@ -1,20 +1,13 @@
 import streamlit as st
 from dotenv import load_dotenv
 from utils.auth import AuthManager
+from utils.admin_config import ADMIN_EMAILS
 from utils.streamlit_utils import hide_sidebar
 
 hide_sidebar()
 auth = AuthManager()
 
 load_dotenv()
-
-# List of allowed admin emails - must match admin.py
-ADMIN_EMAILS = [
-    "admin@blockcert.com",
-    "admin@example.com",
-    "admin@bc.com",
-    # Add more admin emails as needed
-]
 
 # Redirect if already authenticated
 auth.redirect_authenticated_user()

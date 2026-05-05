@@ -557,39 +557,28 @@ elif selected == "Generate Certificate":
     if reapply:
         st.info("📝 **Reapplying a rejected certificate.** Edit the details below and resubmit.")
 
-    with st.form("Generate-Certificate"):
-        st.markdown("#### Fill the details to generate certificate")
-        uid = st.text_input(label="UID", value=next_uid, disabled=True)
-        candidate_name = st.text_input(label="Candidate Name", value=reapply.get("candidate_name", "") if reapply else "")
-        course_name = st.text_input(label="Course Name", value=reapply.get("course_name", "") if reapply else "")
-        org_name = st.text_input(label="Issuing Organization", value=reapply.get("org_name", "") if reapply else "")
-        grade = st.text_input(label="Grade", placeholder="e.g., A+, B, First Class", value=reapply.get("grade", "") if reapply else "")
+    st.markdown("#### Fill the details to generate certificate")
+    uid = st.text_input(label="UID", value=next_uid, disabled=True)
+    candidate_name = st.text_input(label="Candidate Name", value=reapply.get("candidate_name", "") if reapply else "")
+    course_name = st.text_input(label="Course Name", value=reapply.get("course_name", "") if reapply else "")
+    org_name = st.text_input(label="Issuing Organization", value=reapply.get("org_name", "") if reapply else "")
+    grade = st.text_input(label="Grade", placeholder="e.g., A+, B, First Class", value=reapply.get("grade", "") if reapply else "")
 
-        st.markdown("##### 📸 Candidate Face Photo (required)")
-        st.caption("A clear front-facing photo. Used for biometric verification by employers.")
-        face_source = st.radio(
-            "Photo source",
-            options=["📷 Take live photo", "📁 Upload file"],
-            horizontal=True,
-            key="single_cert_face_source",
-        )
-        face_camera = None
-        face_upload = None
-        if face_source == "📷 Take live photo":
-            face_camera = st.camera_input(
-                "Capture candidate face",
-                key="single_cert_face_camera",
-            )
-        else:
-            face_upload = st.file_uploader(
-                "Upload candidate face photo",
-                type=["png", "jpg", "jpeg"],
-                accept_multiple_files=False,
-                key="single_cert_face_upload",
-            )
-        face_image = face_camera if face_camera is not None else face_upload
+    st.markdown("##### 📸 Candidate Face Photo (required)")
+    st.caption("A clear front-facing photo. Used for biometric verification by employers.")
+    face_camera = st.camera_input(
+        "Capture candidate face",
+        key="single_cert_face_camera",
+    )
+    face_upload = st.file_uploader(
+        "Or upload candidate face photo",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=False,
+        key="single_cert_face_upload",
+    )
+    face_image = face_upload if face_upload is not None else face_camera
 
-        submit = st.form_submit_button("Generate")
+    submit = st.button("Generate", type="primary")
 
     if submit:
         if not all([uid, candidate_name, course_name, org_name, grade]):
@@ -850,19 +839,24 @@ elif selected == "Face ID Enrollment":
 elif selected == "View Certificates":
     with st.form("View-Certificate"):
         st.markdown("#### Enter your Certificate ID to view it")
-        certificate_id = st.text_input("Certificate ID")
+        certificate_id = st.text_input("Certificate ID", value=st.session_state.get("view_certificate_id", ""))
         submit = st.form_submit_button("View")
 
-        if submit:
-            if not certificate_id.strip():
-                st.warning("Please enter a Certificate ID.")
-            else:
-                with st.spinner("Fetching certificate..."):
-                    try:
-                        view_certificate(certificate_id, st.session_state.user_email, user_role="institute")
-                    except Exception as e:
-                        print(e)
-                        st.error("❌ Invalid Certificate ID or blockchain error.")
+    if submit:
+        if not certificate_id.strip():
+            st.warning("Please enter a Certificate ID.")
+            st.session_state.pop("view_certificate_id", None)
+        else:
+            st.session_state["view_certificate_id"] = certificate_id.strip()
+
+    certificate_id_to_view = st.session_state.get("view_certificate_id")
+    if certificate_id_to_view:
+        with st.spinner("Fetching certificate..."):
+            try:
+                view_certificate(certificate_id_to_view, st.session_state.user_email, user_role="institute")
+            except Exception as e:
+                print(e)
+                st.error("❌ Invalid Certificate ID or blockchain error.")
 
 # --- Bulk Generate ---
 elif selected == "Bulk Generate":
