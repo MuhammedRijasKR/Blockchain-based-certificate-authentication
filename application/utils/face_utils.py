@@ -266,15 +266,25 @@ def _load_embeddings(cert_id):
 # ---------------------------------------------------------------------------
 
 def clear_face_profile(certificate_id):
-    """Remove a certificate's face profile from disk and the index."""
+    """Remove a certificate's face profile from disk and the index.
+
+    Idempotent: cleans up orphaned directories or stale index entries even if
+    the other side is already missing.
+    """
     profile_dir = FACE_STORE_DIR / certificate_id
     if profile_dir.exists():
-        shutil.rmtree(profile_dir)
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
-    index = _load_index()
+    try:
+        index = _load_index()
+    except Exception:
+        index = {}
     if certificate_id in index:
         del index[certificate_id]
-        _save_index(index)
+        try:
+            _save_index(index)
+        except Exception:
+            pass
 
 
 def save_face_samples(certificate_id, image_sources, owner_name="",

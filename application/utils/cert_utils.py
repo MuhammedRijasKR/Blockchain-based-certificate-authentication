@@ -4,9 +4,10 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 
 from connection import contract
+from utils.qr_utils import make_qr_image_buffer
 
 
-def generate_certificate(output_path, uid, candidate_name, course_name, org_name, institute_logo_path, grade=""):
+def generate_certificate(output_path, uid, candidate_name, course_name, org_name, institute_logo_path, grade="", certificate_id=None):
     # Create a PDF document
     doc = SimpleDocTemplate(output_path, pagesize=letter)
 
@@ -61,6 +62,15 @@ def generate_certificate(output_path, uid, candidate_name, course_name, org_name
 
     recipient = Paragraph(recipient_text, recipient_style)
     elements.extend([recipient, Spacer(1, 12)])
+
+    # Embed a QR code encoding the certificate_id (used for verifier scan).
+    # NOTE: only the image is added — no caption text — because
+    # extract_certificate() parses the PDF's text content positionally,
+    # so any extra Paragraph would shift the indices.
+    if certificate_id:
+        qr_buf = make_qr_image_buffer(certificate_id)
+        qr_img = Image(qr_buf, width=110, height=110)
+        elements.extend([Spacer(1, 18), qr_img])
 
     # Build the PDF document
     doc.build(elements)

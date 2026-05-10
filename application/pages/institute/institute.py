@@ -1,6 +1,9 @@
 import hashlib
 import os
 import json
+import re
+import zipfile
+from io import BytesIO
 
 import streamlit as st
 from connection import contract, w3
@@ -9,14 +12,27 @@ from utils.auth import AuthManager
 from utils.cert_utils import generate_certificate, get_certificate_id_ipfs_hash
 from utils.pinata_utils import upload_to_pinata, upload_bytes_to_pinata, delete_pinata_file, get_pinata_files
 from utils.face_utils import save_face_samples, get_face_profile, enroll_face_for_cert, clear_face_profile, detect_face
+from utils.face_hash import hash_face_profile
 from utils.streamlit_utils import hide_sidebar
 from utils.streamlit_utils import view_certificate, get_next_uid, uid_created
+from utils.qr_utils import make_qr_png_bytes
 from utils.crypto_utils import DigitalCertificateAuth
 from utils.encryption_utils import generate_key, encrypt_file, save_encryption_key, get_encryption_key, decrypt_file
 from utils.merkle_utils import compute_leaf, build_merkle_tree, save_batch_proofs
 from utils.merkle_utils import find_certificate_batch, _load_store as load_merkle_store
 from utils.bloom_filter import bloom_add
-from utils.rejection_remarks import get_rejection, get_rejections_for_institute, remove_rejection, get_batch_rejection, get_batch_rejections_for_institute
+from utils.rejection_remarks import (
+    get_batch_rejection,
+    get_batch_rejections_for_institute,
+    get_institute_rejection,
+    get_rejection,
+    get_rejections_for_institute,
+    get_revocation_rejection,
+    remove_rejection,
+    remove_revocation_rejection,
+)
+from utils.tx_utils import send_tx
+from utils.institute_signer import get_institute_signer
 
 hide_sidebar()
 auth = AuthManager()
@@ -25,6 +41,60 @@ crypto_auth = DigitalCertificateAuth()
 auth.require_auth(allowed_roles=("institute",))
 
 load_dotenv()
+
+
+def _safe_filename(value):
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value).strip())
+    return cleaned.strip("_") or "certificate"
+
+
+def _build_certificates_zip(certificates, zip_title="certificates"):
+    import requests
+
+    zip_buffer = BytesIO()
+    added = 0
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for cert in certificates:
+            certificate_id = cert["certificate_id"]
+            candidate_name = cert.get("candidate_name") or cert.get("name") or certificate_id[:12]
+            safe_name = _safe_filename(candidate_name)
+
+            try:
+                qr_bytes = make_qr_png_bytes(certificate_id)
+                zf.writestr(f"{safe_name}_{certificate_id[:12]}_qr.png", qr_bytes)
+            except Exception as exc:
+                st.warning(f"⚠️ Could not create QR for {candidate_name}: {exc}")
+
+            ipfs_hash = cert.get("ipfs_hash")
+            if not ipfs_hash:
+                continue
+
+            try:
+                enc_key = get_encryption_key(certificate_id, st.session_state.user_email, "institute")
+                if not enc_key:
+                    st.warning(f"⚠️ No encryption key for {candidate_name}")
+                    continue
+
+                response = requests.get(f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}", timeout=60)
+                if response.status_code != 200:
+                    st.warning(f"⚠️ Could not download certificate for {candidate_name}")
+                    continue
+
+                pdf_bytes = decrypt_file(response.content, enc_key)
+                zf.writestr(f"{safe_name}_{certificate_id[:12]}.pdf", pdf_bytes)
+                added += 1
+            except Exception as exc:
+                st.warning(f"⚠️ Error processing {candidate_name}: {exc}")
+
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue(), added, f"{_safe_filename(zip_title)}.zip"
+
+
+def _matches_search_text(*values, query):
+    if not query:
+        return True
+    haystack = " ".join(str(v or "") for v in values).lower()
+    return query.lower() in haystack
 
 # Check if the current user is already registered as an institute
 is_registered = False
@@ -180,12 +250,21 @@ if selected == "Institute Registration":
                     }
                     save_institute_details(institute_email, details)
                     
-                    # Register institute on blockchain (pending verification)
-                    contract.functions.registerInstitute(
-                        institute_email,
-                        institute_name,
-                        public_key
-                    ).transact({'from': w3.eth.accounts[0]})
+                    # Register institute on blockchain (pending verification).
+                    # The msg.sender becomes the institute's bound signer for
+                    # all subsequent on-chain actions.
+                    institute_signer = get_institute_signer(institute_email)
+                    if not institute_signer:
+                        st.error("❌ No free Ganache account available to bind as institute signer.")
+                        st.stop()
+                    send_tx(
+                        contract.functions.registerInstitute(
+                            institute_email,
+                            institute_name,
+                            public_key,
+                        ),
+                        institute_signer,
+                    )
                     st.success("✅ Institute registered successfully!")
                     st.info("🕐 Your registration is pending admin verification. You will be notified once verified.")
                     st.session_state["_institute_registered"] = True
@@ -200,6 +279,7 @@ elif selected == "View Verification Status":
     try:
         institute_info = contract.functions.getInstitute(st.session_state.user_email).call()
         name, public_key, is_verified_status, registered_at = institute_info
+        institute_rejection = get_institute_rejection(st.session_state.user_email)
         
         col1, col2 = st.columns(2)
         with col1:
@@ -208,6 +288,8 @@ elif selected == "View Verification Status":
         with col2:
             if is_verified_status:
                 st.success("✅ **Status:** Verified")
+            elif institute_rejection:
+                st.error("❌ **Status:** Rejected")
             else:
                 st.warning("⏳ **Status:** Pending Verification")
         
@@ -215,7 +297,11 @@ elif selected == "View Verification Status":
         reg_date = datetime.fromtimestamp(registered_at)
         st.markdown(f"**Registered On:** {reg_date.strftime('%Y-%m-%d %H:%M:%S')}")
         
-        if not is_verified_status:
+        if institute_rejection:
+            st.error(f"**Admin Remarks:** {institute_rejection.get('remarks', '')}")
+            st.caption(f"Rejected on: {institute_rejection.get('rejected_at', '')[:19]}")
+            st.info("Review the remarks and contact an admin before submitting another verification request.")
+        elif not is_verified_status:
             st.info("""💡 **What happens next?**
             
 1. An admin will review your registration
@@ -259,7 +345,54 @@ elif selected == "List Of Certificate":
             else:
                 individual_files.append((f, certificate_id))
 
+        search_query = st.text_input(
+            "Search certificates",
+            placeholder="Search by candidate name, organization, or course",
+            key="certificate_list_search",
+        ).strip()
+
+        if search_query:
+            filtered_individual_files = []
+            for f, certificate_id in individual_files:
+                file_name = f["metadata"].get("name", "")
+                try:
+                    cert_data = contract.functions.getCertificate(certificate_id).call()
+                    search_values = (file_name, cert_data[1], cert_data[2], cert_data[3])
+                except Exception:
+                    search_values = (file_name, certificate_id)
+                if _matches_search_text(*search_values, query=search_query):
+                    filtered_individual_files.append((f, certificate_id))
+
+            filtered_batch_groups = {}
+            for batch_id, batch_certs in batch_groups.items():
+                matches = []
+                for f, certificate_id, cert_meta in batch_certs:
+                    if _matches_search_text(
+                        cert_meta.get("candidate_name", ""),
+                        cert_meta.get("course_name", ""),
+                        cert_meta.get("org_name", ""),
+                        f["metadata"].get("name", ""),
+                        query=search_query,
+                    ):
+                        matches.append((f, certificate_id, cert_meta))
+                if matches:
+                    filtered_batch_groups[batch_id] = matches
+
+            filtered_unknown_files = [
+                f for f in unknown_files
+                if _matches_search_text(f["metadata"].get("name", ""), query=search_query)
+            ]
+
+            individual_files = filtered_individual_files
+            batch_groups = filtered_batch_groups
+            unknown_files = filtered_unknown_files
+            result_count = len(individual_files) + sum(len(v) for v in batch_groups.values()) + len(unknown_files)
+            st.caption(f"Showing {result_count} matching item(s).")
+
         count = 1
+
+        if search_query and not individual_files and not batch_groups and not unknown_files:
+            st.info("No certificates matched your search.")
 
         # ===== INDIVIDUAL CERTIFICATES =====
         if individual_files:
@@ -332,11 +465,19 @@ elif selected == "List Of Certificate":
                         elif is_pending_rev:
                             col4.markdown("⏳ **Rev. Pending**")
                         else:
+                            rev_rejection = get_revocation_rejection(certificate_id)
+                            if rev_rejection:
+                                col4.markdown("❌ **Rev. Rejected**")
+                                st.warning(f"**Revocation Rejection Remarks:** {rev_rejection.get('remarks', '')}")
+                                st.caption(f"Rejected on: {rev_rejection.get('rejected_at', '')[:19]}")
                             if col4.button("Revoke", key=f"rev_{ipfs_hash}"):
                                 try:
-                                    contract.functions.proposeRevocation(
-                                        certificate_id
-                                    ).transact({'from': w3.eth.accounts[0]})
+                                    institute_signer = get_institute_signer(st.session_state.user_email)
+                                    send_tx(
+                                        contract.functions.proposeRevocation(certificate_id),
+                                        institute_signer,
+                                    )
+                                    remove_revocation_rejection(certificate_id)
                                     st.success("✅ Revocation request submitted!")
                                     st.rerun()
                                 except Exception as e:
@@ -370,6 +511,15 @@ elif selected == "List Of Certificate":
                             key=f"dl_btn_{ipfs_hash}"
                         )
                         st.markdown(f"[📥 Download Encrypted File]({link})")
+
+                    # Downloadable QR code (encodes the certificate_id).
+                    st.download_button(
+                        "🔳 Download QR",
+                        data=make_qr_png_bytes(certificate_id),
+                        file_name=f"{certificate_id[:12]}_qr.png",
+                        mime="image/png",
+                        key=f"qr_btn_{ipfs_hash}",
+                    )
 
                     st.markdown("---")
                     count += 1
@@ -409,6 +559,35 @@ elif selected == "List Of Certificate":
                         st.error(f"**Admin Remarks:** {batch_rejection_info['remarks']}")
                         st.caption(f"Rejected on: {batch_rejection_info.get('rejected_at', '')[:19]}")
 
+                    batch_zip_key = f"batch_zip_{batch_id}"
+                    batch_zip_name_key = f"batch_zip_name_{batch_id}"
+                    if st.button("📦 Prepare Batch ZIP", key=f"prepare_batch_zip_{batch_id}"):
+                        zip_certs = [
+                            {
+                                "certificate_id": cert_id,
+                                "candidate_name": cert_meta.get("candidate_name", ""),
+                                "ipfs_hash": file_info.get("ipfs_pin_hash", ""),
+                            }
+                            for file_info, cert_id, cert_meta in batch_certs
+                        ]
+                        with st.spinner(f"Preparing Batch #{batch_id} ZIP..."):
+                            zip_bytes, added_count, zip_name = _build_certificates_zip(
+                                zip_certs,
+                                zip_title=f"batch_{batch_id}_certificates",
+                            )
+                        st.session_state[batch_zip_key] = zip_bytes
+                        st.session_state[batch_zip_name_key] = zip_name
+                        st.success(f"Prepared ZIP with {added_count} certificate PDF(s) and QR code(s).")
+
+                    if batch_zip_key in st.session_state:
+                        st.download_button(
+                            "💾 Download Batch ZIP",
+                            data=st.session_state[batch_zip_key],
+                            file_name=st.session_state.get(batch_zip_name_key, f"batch_{batch_id}_certificates.zip"),
+                            mime="application/zip",
+                            key=f"download_batch_zip_{batch_id}",
+                        )
+
                     # Table of certificates in this batch
                     for cert_idx, (f, certificate_id, cert_meta) in enumerate(batch_certs):
                         name = f['metadata'].get('name', 'Unnamed')
@@ -441,12 +620,22 @@ elif selected == "List Of Certificate":
                             elif is_pending_rev:
                                 c4.markdown("⏳ Rev. Pending")
                             else:
+                                rev_rejection = get_revocation_rejection(certificate_id)
+                                if rev_rejection:
+                                    c4.markdown("❌ Rev. Rejected")
+                                    st.warning(f"**Revocation Rejection Remarks:** {rev_rejection.get('remarks', '')}")
+                                    st.caption(f"Rejected on: {rev_rejection.get('rejected_at', '')[:19]}")
                                 if c4.button("Revoke", key=f"rev_batch_{batch_id}_{cert_idx}"):
                                     try:
-                                        contract.functions.proposeRevocationBatchCert(
-                                            certificate_id,
-                                            st.session_state.user_email
-                                        ).transact({'from': w3.eth.accounts[0]})
+                                        institute_signer = get_institute_signer(st.session_state.user_email)
+                                        send_tx(
+                                            contract.functions.proposeRevocationBatchCert(
+                                                certificate_id,
+                                                st.session_state.user_email,
+                                            ),
+                                            institute_signer,
+                                        )
+                                        remove_revocation_rejection(certificate_id)
                                         st.success("✅ Revocation request submitted!")
                                         st.rerun()
                                     except Exception as e:
@@ -480,6 +669,15 @@ elif selected == "List Of Certificate":
                                 key=f"dl_btn_batch_{batch_id}_{cert_idx}"
                             )
                             st.markdown(f"[📥 Download Encrypted File]({link})")
+
+                        # Downloadable QR code (encodes the certificate_id).
+                        st.download_button(
+                            "🔳 Download QR",
+                            data=make_qr_png_bytes(certificate_id),
+                            file_name=f"{certificate_id[:12]}_qr.png",
+                            mime="image/png",
+                            key=f"qr_btn_batch_{batch_id}_{cert_idx}",
+                        )
 
                         # Full certificate ID for copy/paste into the Verify / View flows.
                         st.caption("Certificate ID")
@@ -596,7 +794,12 @@ elif selected == "Generate Certificate":
                 pdf_file_path = f"{uid}_{candidate_name.strip().replace(' ', '_').lower()}.pdf"
                 institute_logo_path = "../assets/logo.jpg"
 
-                generate_certificate(pdf_file_path, uid, candidate_name, course_name, org_name, institute_logo_path, grade)
+                # Compute cert_id BEFORE PDF generation so it can be embedded as a QR.
+                salt = os.urandom(16).hex()
+                data = f"{salt}{uid}{candidate_name}{course_name}{org_name}{grade}".encode("utf-8")
+                certificate_id = hashlib.sha256(data).hexdigest()
+
+                generate_certificate(pdf_file_path, uid, candidate_name, course_name, org_name, institute_logo_path, grade, certificate_id=certificate_id)
 
                 # Encrypt the PDF before uploading
                 encryption_key = generate_key()
@@ -607,11 +810,6 @@ elif selected == "Generate Certificate":
                 os.remove(pdf_file_path)
 
                 if ipfs_hash:
-                    # Generate random salt for hash uniqueness
-                    salt = os.urandom(16).hex()
-                    data = f"{salt}{uid}{candidate_name}{course_name}{org_name}{grade}".encode("utf-8")
-                    certificate_id = hashlib.sha256(data).hexdigest()
-
                     # Create certificate data for digital signature
                     certificate_data = {
                         "uid": uid,
@@ -632,18 +830,25 @@ elif selected == "Generate Certificate":
 
                     # Store on Blockchain
                     try:
-                        contract.functions.proposeCertificate(
-                            certificate_id, 
-                            uid, 
-                            candidate_name, 
-                            course_name, 
-                            org_name, 
-                            ipfs_hash,
-                            st.session_state.user_email,
-                            digital_signature,
-                            salt,
-                            grade
-                        ).transact({'from': w3.eth.accounts[0]})
+                        institute_signer = get_institute_signer(st.session_state.user_email)
+                        if not institute_signer:
+                            st.error("❌ No bound signer for this institute. Re-register.")
+                            st.stop()
+                        send_tx(
+                            contract.functions.proposeCertificate(
+                                certificate_id,
+                                uid,
+                                candidate_name,
+                                course_name,
+                                org_name,
+                                ipfs_hash,
+                                st.session_state.user_email,
+                                digital_signature,
+                                salt,
+                                grade,
+                            ),
+                            institute_signer,
+                        )
                         uid_created(next_uid)
 
                         # Save encryption key with access control
@@ -660,6 +865,20 @@ elif selected == "Generate Certificate":
                             institute_email=st.session_state.user_email,
                         )
                         if face_result["success"]:
+                            # Anchor the face profile hash on-chain so the verifier
+                            # can detect any post-issuance tampering of the
+                            # off-chain face_profiles store.
+                            face_digest = hash_face_profile(certificate_id)
+                            if face_digest is not None:
+                                try:
+                                    send_tx(
+                                        contract.functions.setCertificateFaceHash(
+                                            certificate_id, face_digest
+                                        ),
+                                        institute_signer,
+                                    )
+                                except Exception as exc:
+                                    st.warning(f"⚠️ Could not anchor face hash on-chain: {exc}")
                             st.success(
                                 f"🧑‍💼 Face profile bound to certificate ({face_result['sample_count']} sample)."
                             )
@@ -701,6 +920,13 @@ elif selected == "Generate Certificate":
                                 data=pdf_bytes,
                                 file_name=pdf_file_path,
                                 mime="application/pdf"
+                            )
+                            st.download_button(
+                                label="🔳 Download Certificate QR",
+                                data=make_qr_png_bytes(certificate_id),
+                                file_name=f"{certificate_id[:12]}_qr.png",
+                                mime="image/png",
+                                key=f"generated_qr_{certificate_id}",
                             )
                         else:
                             st.warning("Could not fetch the certificate PDF from IPFS.")
@@ -893,7 +1119,7 @@ elif selected == "Bulk Generate":
             preview_df.index = range(1, len(preview_df) + 1)
             st.dataframe(preview_df, use_container_width=True)
 
-            if st.button("� Validate Inputs", type="secondary"):
+            if st.button("Validate Inputs", type="secondary"):
                 # Build the face image map from the ZIP and pre-flight every
                 # row: detect a usable face in the matched image. The user
                 # then sees a full report and must explicitly confirm before
@@ -1051,7 +1277,14 @@ elif selected == "Bulk Generate":
 
                             pdf_file_path = f"{uid}_{candidate_name.strip().replace(' ', '_').lower()}.pdf"
                             institute_logo_path = "../assets/logo.jpg"
-                            generate_certificate(pdf_file_path, uid, candidate_name, course_name, org_name, institute_logo_path, grade)
+
+                            # Compute cert_id BEFORE PDF generation so the QR can be embedded.
+                            salt = os.urandom(16).hex()
+                            certificate_id = hashlib.sha256(
+                                f"{salt}{uid}{candidate_name}{course_name}{org_name}{grade}".encode("utf-8")
+                            ).hexdigest()
+
+                            generate_certificate(pdf_file_path, uid, candidate_name, course_name, org_name, institute_logo_path, grade, certificate_id=certificate_id)
 
                             encryption_key = generate_key()
                             encrypted_bytes = encrypt_file(pdf_file_path, encryption_key)
@@ -1063,14 +1296,11 @@ elif selected == "Bulk Generate":
                                 st.error(f"❌ Failed to upload certificate for {candidate_name}")
                                 continue
 
-                            salt = os.urandom(16).hex()
-                            certificate_id = hashlib.sha256(
-                                f"{salt}{uid}{candidate_name}{course_name}{org_name}{grade}".encode("utf-8")
-                            ).hexdigest()
-                            leaf_hash = compute_leaf(salt, uid, candidate_name, course_name, org_name, grade)
-
                             save_encryption_key(certificate_id, encryption_key, st.session_state.user_email)
 
+                            # Enroll the face FIRST so we can hash the embedding
+                            # and bake the digest into the Merkle leaf, anchoring
+                            # the off-chain face profile to the on-chain root.
                             face_result = enroll_face_for_cert(
                                 certificate_id,
                                 face_bytes,
@@ -1082,6 +1312,15 @@ elif selected == "Bulk Generate":
                                     f"⚠️ Face enrollment failed for {candidate_name}: "
                                     + " | ".join(face_result.get("errors", ["unknown"]))
                                 )
+                                face_hash_hex = ""
+                            else:
+                                face_digest = hash_face_profile(certificate_id)
+                                face_hash_hex = face_digest.hex() if face_digest else ""
+
+                            leaf_hash = compute_leaf(
+                                salt, uid, candidate_name, course_name, org_name, grade,
+                                face_hash=face_hash_hex,
+                            )
 
                             uid_created(uid)
 
@@ -1094,7 +1333,8 @@ elif selected == "Bulk Generate":
                                 "org_name": org_name,
                                 "salt": salt,
                                 "grade": grade,
-                                "ipfs_hash": ipfs_hash
+                                "ipfs_hash": ipfs_hash,
+                                "face_hash": face_hash_hex,
                             })
                             leaves.append(leaf_hash)
 
@@ -1111,11 +1351,15 @@ elif selected == "Bulk Generate":
 
                         status_text.text("Storing Merkle root on blockchain...")
                         try:
-                            contract.functions.proposeBatch(
-                                root_bytes,
-                                st.session_state.user_email,
-                                len(certificates)
-                            ).transact({'from': w3.eth.accounts[0]})
+                            institute_signer = get_institute_signer(st.session_state.user_email)
+                            send_tx(
+                                contract.functions.proposeBatch(
+                                    root_bytes,
+                                    st.session_state.user_email,
+                                    len(certificates),
+                                ),
+                                institute_signer,
+                            )
 
                             batch_id = contract.functions.getBatchCount().call()
                             save_batch_proofs(batch_id, certificates, tree_layers, merkle_root)
@@ -1141,6 +1385,20 @@ elif selected == "Bulk Generate":
                             st.dataframe(id_df, use_container_width=True, hide_index=True)
 
                             st.session_state["bulk_generated_certs"] = certificates
+                            with st.spinner("Preparing ZIP with PDFs and QR codes..."):
+                                zip_bytes, added_count, zip_name = _build_certificates_zip(
+                                    certificates,
+                                    zip_title=f"batch_{batch_id}_certificates",
+                                )
+                            st.download_button(
+                                "💾 Download All as ZIP",
+                                data=zip_bytes,
+                                file_name=zip_name,
+                                mime="application/zip",
+                                key=f"download_bulk_zip_{batch_id}",
+                            )
+                            st.caption(f"ZIP includes {added_count} certificate PDF(s) and QR code(s).")
+
                             # Clear validation cache so the user must re-validate for the next batch.
                             for k in ("bulk_validated_rows", "bulk_problem_rows", "bulk_total_rows", "bulk_confirm"):
                                 st.session_state.pop(k, None)
@@ -1150,50 +1408,4 @@ elif selected == "Bulk Generate":
 
         except Exception as e:
             st.error(f"❌ Error reading CSV: {str(e)}")
-
-    # Bulk download section (persists via session state)
-    if "bulk_generated_certs" in st.session_state and st.session_state["bulk_generated_certs"]:
-        st.markdown("---")
-        st.markdown("#### 📥 Download All Certificates")
-        if st.button("📦 Download All as ZIP", type="primary"):
-            import requests as req
-            import zipfile
-            from io import BytesIO
-
-            bulk_certs = st.session_state["bulk_generated_certs"]
-            zip_buffer = BytesIO()
-
-            with st.spinner(f"Preparing {len(bulk_certs)} certificates for download..."):
-                dl_progress = st.progress(0)
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for i, cert in enumerate(bulk_certs):
-                        try:
-                            # Fetch encrypted PDF from IPFS
-                            content_url = f"https://gateway.pinata.cloud/ipfs/{cert['ipfs_hash']}"
-                            response = req.get(content_url, timeout=60)
-                            if response.status_code != 200:
-                                st.warning(f"⚠️ Could not download certificate for {cert['candidate_name']}")
-                                continue
-
-                            # Decrypt
-                            enc_key = get_encryption_key(cert["certificate_id"], st.session_state.user_email, "institute")
-                            if enc_key:
-                                pdf_bytes = decrypt_file(response.content, enc_key)
-                                safe_name = cert["candidate_name"].strip().replace(" ", "_")
-                                zf.writestr(f"{safe_name}.pdf", pdf_bytes)
-                            else:
-                                st.warning(f"⚠️ No encryption key for {cert['candidate_name']}")
-                        except Exception as e:
-                            st.warning(f"⚠️ Error processing {cert['candidate_name']}: {str(e)}")
-
-                        dl_progress.progress((i + 1) / len(bulk_certs))
-
-            zip_buffer.seek(0)
-            st.download_button(
-                label="💾 Save ZIP File",
-                data=zip_buffer.getvalue(),
-                file_name="bulk_certificates.zip",
-                mime="application/zip",
-                key="download_bulk_zip"
-            )
 

@@ -10,3 +10,4 @@ firebase-admin
 web3
 cryptography
 opencv-contrib-python-headless
+qrcode[pil]

@@ -1,6 +1,8 @@
 import base64
 import json
 import os
+import tempfile
+import time
 from io import BytesIO
 
 import requests
@@ -77,10 +79,17 @@ def view_certificate(certificate_id, user_email=None, user_role=None):
             st.code(certificate_id, language=None)
             if is_batch_cert:
                 st.caption("This certificate was issued as part of a Merkle batch.")
-            with open("temp.pdf", 'wb') as pdf_file:
-                pdf_file.write(decrypted_bytes)
-            displayPDF("temp.pdf")
-            os.remove("temp.pdf")
+
+            tmp_fd, tmp_path = tempfile.mkstemp(prefix="cert_view_", suffix=".pdf")
+            try:
+                with os.fdopen(tmp_fd, "wb") as pdf_file:
+                    pdf_file.write(decrypted_bytes)
+                displayPDF(tmp_path)
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
             st.download_button(
                 label="📥 Download Certificate PDF",
                 data=decrypted_bytes,
@@ -139,44 +148,84 @@ def get_image_base64(img_path):
     return base64.b64encode(buffered.getvalue()).decode()
 
 
+def _acquire_uid_lock(file_path, timeout=10.0):
+    """Best-effort cross-process advisory lock for the UID counter.
+
+    Uses a sibling ``<file>.lock`` file with exclusive create. Retries until
+    ``timeout`` elapses, after which it forcibly takes the lock to avoid
+    deadlocking on a stale lock file.
+    """
+    lock_path = file_path + ".lock"
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return lock_path
+        except FileExistsError:
+            if time.time() >= deadline:
+                # Forcibly reclaim the lock
+                try:
+                    os.remove(lock_path)
+                except OSError:
+                    pass
+            else:
+                time.sleep(0.05)
+
+
+def _release_uid_lock(lock_path):
+    try:
+        os.remove(lock_path)
+    except OSError:
+        pass
+
+
 def get_next_uid(file_path="last_uid.json", start_uid=1000):
     """Reads last UID from JSON file, increments it, saves new UID with timestamp."""
-    if not os.path.exists(file_path):
+    lock = _acquire_uid_lock(file_path)
+    try:
+        if not os.path.exists(file_path):
+            data = {
+                "last_uid": start_uid,
+                "created": False,
+            }
+            with open(file_path, "w") as f:
+                json.dump(data, f, indent=4)
+            return str(start_uid)
+
+        with open(file_path, "r") as f:
+            data = json.load(f)
+
+        new_uid = data["last_uid"] + 1 if data["created"] else data["last_uid"]
         data = {
-            "last_uid": start_uid,
-            "created": False
+            "last_uid": new_uid,
+            "created": False,
         }
+
         with open(file_path, "w") as f:
             json.dump(data, f, indent=4)
-        return str(start_uid)
 
-    with open(file_path, "r") as f:
-        data = json.load(f)
-
-    new_uid = data["last_uid"] + 1 if data["created"] else data["last_uid"]
-    data = {
-        "last_uid": new_uid,
-        "created": False
-    }
-
-    with open(file_path, "w") as f:
-        json.dump(data, f, indent=4)
-
-    return str(new_uid)
+        return str(new_uid)
+    finally:
+        _release_uid_lock(lock)
 
 
 def uid_created(uid, file_path="last_uid.json"):
     """Marks the given UID as created by setting the flag to True in the JSON file."""
-    if not os.path.exists(file_path):
-        raise FileNotFoundError("UID file does not exist.")
+    lock = _acquire_uid_lock(file_path)
+    try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError("UID file does not exist.")
 
-    with open(file_path, "r") as f:
-        data = json.load(f)
+        with open(file_path, "r") as f:
+            data = json.load(f)
 
-    if str(data["last_uid"]) != str(uid):
-        raise ValueError(f"UID {uid} does not match the current UID ({data['last_uid']}).")
+        if str(data["last_uid"]) != str(uid):
+            raise ValueError(f"UID {uid} does not match the current UID ({data['last_uid']}).")
 
-    data["created"] = True
+        data["created"] = True
 
-    with open(file_path, "w") as f:
-        json.dump(data, f, indent=4)
+        with open(file_path, "w") as f:
+            json.dump(data, f, indent=4)
+    finally:
+        _release_uid_lock(lock)

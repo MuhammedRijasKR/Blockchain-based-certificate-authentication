@@ -9,9 +9,14 @@ import os
 MERKLE_STORE_PATH = os.path.join(os.path.dirname(__file__), "..", "merkle_proofs.json")
 
 
-def compute_leaf(salt, uid, candidate_name, course_name, org_name, grade=""):
-    """Compute a leaf hash for a single certificate."""
-    data = f"{salt}{uid}{candidate_name}{course_name}{org_name}{grade}".encode("utf-8")
+def compute_leaf(salt, uid, candidate_name, course_name, org_name, grade="", face_hash=""):
+    """Compute a leaf hash for a single certificate.
+
+    ``face_hash`` is the hex digest of the bound face profile embeddings; pass
+    an empty string when no face is bound. Including it here cryptographically
+    ties the on-chain Merkle root to the off-chain face profile.
+    """
+    data = f"{salt}{uid}{candidate_name}{course_name}{org_name}{grade}{face_hash}".encode("utf-8")
     return hashlib.sha256(data).hexdigest()
 
 
@@ -113,6 +118,7 @@ def save_batch_proofs(batch_id, certificates, tree_layers, root):
             "salt": cert["salt"],
             "grade": cert.get("grade", ""),
             "ipfs_hash": cert.get("ipfs_hash", ""),
+            "face_hash": cert.get("face_hash", ""),
             "leaf_index": i
         }
 

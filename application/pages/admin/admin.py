@@ -6,7 +6,14 @@ from utils.streamlit_utils import hide_sidebar
 from utils.pinata_utils import delete_pinata_file
 from utils.face_utils import clear_face_profile
 from utils.bloom_filter import bloom_rebuild, bloom_stats
-from utils.rejection_remarks import save_rejection, save_batch_rejection
+from utils.rejection_remarks import (
+    get_institute_rejection,
+    save_batch_rejection,
+    save_institute_rejection,
+    save_rejection,
+    save_revocation_rejection,
+)
+from utils.tx_utils import send_tx
 from datetime import datetime
 
 hide_sidebar()
@@ -36,6 +43,30 @@ st.markdown("<h1 style='text-align: center;'>🛡️ Admin Dashboard</h1>", unsa
 st.caption(f"On-chain admin signer: `{current_admin_account}`")
 st.markdown("---")
 
+
+PAGE_SIZE = 25
+
+
+def _paginate(items, key):
+    """Return the slice of ``items`` for the page selected by the user.
+
+    Renders a small page picker above the list; falls back to returning the
+    full list when there are fewer than ``PAGE_SIZE`` rows.
+    """
+    if len(items) <= PAGE_SIZE:
+        return items
+    pages = (len(items) + PAGE_SIZE - 1) // PAGE_SIZE
+    page = st.number_input(
+        f"Page (1\u2013{pages}, {PAGE_SIZE}/page)",
+        min_value=1,
+        max_value=pages,
+        value=1,
+        step=1,
+        key=f"page_{key}",
+    )
+    start = (page - 1) * PAGE_SIZE
+    return items[start:start + PAGE_SIZE]
+
 # Tabs for different admin functions
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "⏳ Pending Institutes", 
@@ -60,7 +91,7 @@ with tab1:
             try:
                 institute_info = contract.functions.getInstitute(email).call()
                 name, public_key, is_verified, registered_at = institute_info
-                if not is_verified:
+                if not is_verified and not get_institute_rejection(email):
                     details = get_institute_details(email)
                     pending_institutes.append({
                         "email": email,
@@ -76,25 +107,79 @@ with tab1:
             st.info("🎉 No pending institutes. All institutes have been verified!")
         else:
             st.warning(f"⚠️ {len(pending_institutes)} institute(s) awaiting verification")
-            
-            for idx, institute in enumerate(pending_institutes):
+
+            for idx, institute in enumerate(_paginate(pending_institutes, "pending_institutes")):
                 details = institute.get('details', {})
                 with st.expander(f"📋 {institute['name']} ({institute['email']})", expanded=True):
-                    
+                    try:
+                        v_count, v_required, v_by_me = contract.functions.getInstituteApprovalStatus(
+                            institute['email'],
+                            current_admin_account,
+                        ).call()
+                    except Exception:
+                        v_count, v_required, v_by_me = 0, 0, False
+                    st.info(f"Multi-signature verification: **{v_count}/{v_required}** admin approvals recorded.")
+                    if v_by_me:
+                        st.success("You have already approved this institute.")
+
                     col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
                     with col_btn1:
-                        if st.button("✅ Verify", key=f"verify_{idx}", type="primary", use_container_width=True):
+                        if st.button(
+                            "✅ Verify" if not v_by_me else "✅ Approved by you",
+                            key=f"verify_{idx}",
+                            type="primary",
+                            use_container_width=True,
+                            disabled=v_by_me,
+                        ):
                             try:
-                                contract.functions.verifyInstitute(
-                                    institute['email']
-                                ).transact({'from': current_admin_account})
-                                st.success(f"✅ {institute['name']} has been verified!")
+                                send_tx(
+                                    contract.functions.verifyInstitute(institute['email']),
+                                    current_admin_account,
+                                )
+                                st.success("✅ Verification approval recorded. Institute becomes verified after threshold approvals.")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Verification failed: {str(e)}")
                     with col_btn2:
                         if st.button("❌ Reject", key=f"reject_{idx}", type="secondary", use_container_width=True):
-                            st.warning("⚠️ Rejection feature coming soon.")
+                            st.session_state[f"show_reject_inst_form_{idx}"] = True
+
+                    if st.session_state.get(f"show_reject_inst_form_{idx}", False):
+                        inst_remarks = st.text_area(
+                            "📝 Institute Rejection Remarks (required)",
+                            placeholder="Explain why this institute verification request is being rejected...",
+                            key=f"reject_inst_remarks_{idx}",
+                        )
+                        ir_col1, ir_col2 = st.columns(2)
+                        with ir_col1:
+                            if st.button("✅ Confirm Rejection", key=f"confirm_reject_inst_{idx}", type="primary", use_container_width=True):
+                                if not inst_remarks or not inst_remarks.strip():
+                                    st.warning("Please enter rejection remarks.")
+                                else:
+                                    try:
+                                        send_tx(
+                                            contract.functions.rejectInstitute(institute['email']),
+                                            current_admin_account,
+                                        )
+                                        save_institute_rejection(
+                                            institute['email'],
+                                            inst_remarks.strip(),
+                                            st.session_state.user_email,
+                                            {
+                                                "name": institute["name"],
+                                                "public_key": institute["public_key"],
+                                                "registered_at": institute["registered_at"],
+                                                "details": details,
+                                            },
+                                        )
+                                        st.success("✅ Institute verification rejected with remarks.")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Reject failed: {str(e)}")
+                        with ir_col2:
+                            if st.button("Cancel", key=f"cancel_reject_inst_{idx}", use_container_width=True):
+                                st.session_state[f"show_reject_inst_form_{idx}"] = False
+                                st.rerun()
                     
                     st.markdown("---")
                     
@@ -149,8 +234,8 @@ with tab2:
             st.success("🎉 No pending certificates. All proposals have been reviewed!")
         else:
             st.warning(f"⚠️ {len(pending_cert_ids)} certificate(s) awaiting approval")
-            
-            for idx, cert_id in enumerate(pending_cert_ids):
+
+            for idx, cert_id in enumerate(_paginate(list(pending_cert_ids), "pending_certs")):
                 try:
                     cert_data = contract.functions.getCertificate(cert_id).call()
                     # cert_data: [0]=uid, [1]=candidate_name, [2]=course_name, [3]=org_name, 
@@ -176,7 +261,10 @@ with tab2:
                                 disabled=approved_by_me,
                             ):
                                 try:
-                                    contract.functions.approveCertificate(cert_id).transact({'from': current_admin_account})
+                                    send_tx(
+                                        contract.functions.approveCertificate(cert_id),
+                                        current_admin_account,
+                                    )
                                     st.success("✅ Approval recorded. The certificate becomes active after 2 of 3 admin approvals.")
                                     st.rerun()
                                 except Exception as e:
@@ -208,8 +296,11 @@ with tab2:
                                                 "institute_email": cert_data[5],
                                                 "grade": cert_data[8],
                                             }
+                                            send_tx(
+                                                contract.functions.rejectCertificate(cert_id),
+                                                current_admin_account,
+                                            )
                                             save_rejection(cert_id, remarks.strip(), st.session_state.user_email, cert_info)
-                                            contract.functions.rejectCertificate(cert_id).transact({'from': current_admin_account})
                                             clear_face_profile(cert_id)
                                             st.success("✅ Certificate rejected with remarks.")
                                             st.rerun()
@@ -265,8 +356,8 @@ with tab3:
             st.success("🎉 No pending batches!")
         else:
             st.warning(f"⚠️ {len(pending_batch_ids)} batch(es) awaiting approval")
-            
-            for idx, batch_id in enumerate(pending_batch_ids):
+
+            for idx, batch_id in enumerate(_paginate(list(pending_batch_ids), "pending_batches")):
                 try:
                     batch_data = contract.functions.getBatch(batch_id).call()
                     # batch_data: [0]=merkle_root, [1]=institute_email, [2]=certificate_count, [3]=is_approved, [4]=timestamp
@@ -291,7 +382,10 @@ with tab3:
                                 disabled=approved_by_me,
                             ):
                                 try:
-                                    contract.functions.approveBatch(batch_id).transact({'from': current_admin_account})
+                                    send_tx(
+                                        contract.functions.approveBatch(batch_id),
+                                        current_admin_account,
+                                    )
                                     st.success(f"✅ Approval recorded for batch #{batch_id}. The batch becomes active after 2 of 3 admin approvals.")
                                     st.rerun()
                                 except Exception as e:
@@ -314,12 +408,15 @@ with tab3:
                                         st.warning("Please enter rejection remarks.")
                                     else:
                                         try:
+                                            send_tx(
+                                                contract.functions.rejectBatch(batch_id),
+                                                current_admin_account,
+                                            )
                                             save_batch_rejection(
                                                 batch_id, batch_remarks.strip(),
                                                 st.session_state.user_email,
                                                 batch_data[1], batch_data[2]
                                             )
-                                            contract.functions.rejectBatch(batch_id).transact({'from': current_admin_account})
                                             # Clean up any face profiles bound to certs in this batch
                                             try:
                                                 from utils.merkle_utils import _load_store as _ms_load
@@ -422,8 +519,8 @@ with tab4:
             st.success("🎉 No pending revocation requests!")
         else:
             st.warning(f"⚠️ {len(pending_rev_ids)} revocation request(s) awaiting approval")
-            
-            for idx, cert_id in enumerate(pending_rev_ids):
+
+            for idx, cert_id in enumerate(_paginate(list(pending_rev_ids), "pending_revs")):
                 try:
                     # Try individual certificate first
                     cert_data = None
@@ -471,29 +568,92 @@ with tab4:
                         if is_batch_cert:
                             st.caption(f"📦 Batch Certificate (Batch #{batch_id_found})")
 
+                        try:
+                            r_count, r_required, r_by_me = contract.functions.getRevocationApprovalStatus(
+                                cert_id, current_admin_account
+                            ).call()
+                        except Exception:
+                            r_count, r_required, r_by_me = 0, 0, False
+                        st.info(f"Multi-signature revocation: **{r_count}/{r_required}** admin approvals recorded.")
+                        if r_by_me:
+                            st.success("You have already approved this revocation.")
+
                         # Action buttons
                         col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
                         with col_btn1:
-                            if st.button("✅ Approve Revocation", key=f"approve_rev_{idx}", type="primary", use_container_width=True):
+                            if st.button(
+                                "✅ Approve Revocation" if not r_by_me else "✅ Approved by you",
+                                key=f"approve_rev_{idx}",
+                                type="primary",
+                                use_container_width=True,
+                                disabled=bool(r_by_me),
+                            ):
                                 try:
-                                    contract.functions.approveRevocation(cert_id).transact({'from': current_admin_account})
-                                    # Also delete from IPFS
-                                    if display_ipfs:
-                                        delete_pinata_file(display_ipfs)
-                                    # Remove the bound face profile
-                                    clear_face_profile(cert_id)
-                                    st.success("✅ Certificate revoked and removed from IPFS!")
+                                    send_tx(
+                                        contract.functions.approveRevocation(cert_id),
+                                        current_admin_account,
+                                    )
+                                    is_now_revoked = False
+                                    try:
+                                        is_now_revoked = contract.functions.isRevoked(cert_id).call()
+                                    except Exception:
+                                        pass
+                                    if is_now_revoked:
+                                        if display_ipfs:
+                                            try:
+                                                delete_pinata_file(display_ipfs)
+                                            except Exception:
+                                                pass
+                                        clear_face_profile(cert_id)
+                                        st.success("✅ Revocation finalized and certificate removed from IPFS.")
+                                    else:
+                                        st.success("✅ Revocation approval recorded. Final revocation occurs after threshold approvals.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ Revocation approval failed: {str(e)}")
                         with col_btn2:
                             if st.button("❌ Reject Revocation", key=f"reject_rev_{idx}", type="secondary", use_container_width=True):
-                                try:
-                                    contract.functions.rejectRevocation(cert_id).transact({'from': current_admin_account})
-                                    st.success("✅ Revocation request rejected. Certificate remains active.")
+                                st.session_state[f"show_reject_rev_form_{idx}"] = True
+
+                        if st.session_state.get(f"show_reject_rev_form_{idx}", False):
+                            rev_remarks = st.text_area(
+                                "📝 Revocation Rejection Remarks (required)",
+                                placeholder="Explain why this revocation request is being rejected...",
+                                key=f"reject_rev_remarks_{idx}",
+                            )
+                            rr_col1, rr_col2 = st.columns(2)
+                            with rr_col1:
+                                if st.button("✅ Confirm Rejection", key=f"confirm_reject_rev_{idx}", type="primary", use_container_width=True):
+                                    if not rev_remarks or not rev_remarks.strip():
+                                        st.warning("Please enter rejection remarks.")
+                                    else:
+                                        try:
+                                            send_tx(
+                                                contract.functions.rejectRevocation(cert_id),
+                                                current_admin_account,
+                                            )
+                                            save_revocation_rejection(
+                                                cert_id,
+                                                rev_remarks.strip(),
+                                                st.session_state.user_email,
+                                                {
+                                                    "uid": display_uid,
+                                                    "candidate_name": display_name,
+                                                    "course_name": display_course,
+                                                    "org_name": display_org,
+                                                    "ipfs_hash": display_ipfs,
+                                                    "institute_email": display_email,
+                                                    "is_batch_cert": is_batch_cert,
+                                                },
+                                            )
+                                            st.success("✅ Revocation request rejected with remarks. Certificate remains active.")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"❌ Rejection failed: {str(e)}")
+                            with rr_col2:
+                                if st.button("Cancel", key=f"cancel_reject_rev_{idx}", use_container_width=True):
+                                    st.session_state[f"show_reject_rev_form_{idx}"] = False
                                     st.rerun()
-                                except Exception as e:
-                                    st.error(f"❌ Rejection failed: {str(e)}")
                         
                         st.markdown("---")
                         

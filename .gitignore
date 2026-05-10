@@ -1,5 +1,6 @@
 **/__pycache__/
 .env
+.env.*
 .vscode
 deployment_config.json
 build/
@@ -8,3 +9,12 @@ venv/
 .idea/
 application/.streamlit_auth.json
 application/*.json
+application/keys
+application/keys/
+application/face_profiles
+application/face_profiles/
+application/models/
+application/db/institute_details.json
+application/serviceAccountKey.json
+application/institute_signers.json
+keys.txt
